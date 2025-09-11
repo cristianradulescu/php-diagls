@@ -7,6 +7,7 @@
 *.dll
 *.so
 *.dylib
+php-diagls
 
 # Test binary, built with `go test -c`
 *.test
