@@ -8,7 +8,7 @@ import (
 	"os"
 
 	"github.com/cristianradulescu/php-diagls/internal/logging"
-	"github.com/cristianradulescu/php-diagls/server"
+	"github.com/cristianradulescu/php-diagls/internal/server"
 	"go.lsp.dev/jsonrpc2"
 )
 

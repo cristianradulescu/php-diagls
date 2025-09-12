@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/cristianradulescu/php-diagls/config"
+	"github.com/cristianradulescu/php-diagls/internal/config"
 	"go.lsp.dev/protocol"
 )
 
@@ -35,17 +35,9 @@ func FindProjectRoot(filePath string) string {
 	return filepath.Dir(filePath)
 }
 
-func GetClientInfoValue(clientInfo *protocol.ClientInfo, field string) string {
-	if clientInfo == nil {
-		return ""
+func EnsureDiagnosticsArray(diagnostics []protocol.Diagnostic) []protocol.Diagnostic {
+	if diagnostics == nil {
+		return make([]protocol.Diagnostic, 0)
 	}
-
-	switch field {
-		case "name":
-			return clientInfo.Name
-		case "version":
-			return clientInfo.Version
-		default:
-			return ""
-	}
+	return diagnostics
 }

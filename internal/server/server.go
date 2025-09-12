@@ -6,15 +6,16 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/cristianradulescu/php-diagls/config"
+	"github.com/cristianradulescu/php-diagls/internal/config"
 	"github.com/cristianradulescu/php-diagls/internal/logging"
+	"github.com/cristianradulescu/php-diagls/internal/utils"
 	"go.lsp.dev/jsonrpc2"
 	"go.lsp.dev/protocol"
 )
 
 // Server represents the Language Server Protocol (LSP) server
 type Server struct {
-	conn jsonrpc2.Conn
+	conn         jsonrpc2.Conn
 	serverConfig *config.Config
 }
 
@@ -37,6 +38,16 @@ func (s *Server) Handle(ctx context.Context, reply jsonrpc2.Replier, req jsonrpc
 		return s.handleInitialized(ctx, reply, req)
 	case protocol.MethodWorkspaceExecuteCommand:
 		return s.handleExecuteCommand(ctx, reply, req)
+	case protocol.MethodTextDocumentDidOpen:
+		return s.handleDidOpen(ctx, reply, req)
+	// case protocol.MethodTextDocumentDidChange:
+	// 	return s.handleDidChange(ctx, reply, req)
+	// case protocol.MethodTextDocumentDidClose:
+	// 	return s.handleDidClose(ctx, reply, req)
+	// case protocol.MethodTextDocumentDidSave:
+	// 	return s.handleDidSave(ctx, reply, req)
+	// case protocol.MethodWorkspaceDidChangeWatchedFiles:
+	// 	return s.handleDidChangeWatchedFiles(ctx, reply, req)
 	case protocol.MethodShutdown:
 		return s.handleShutdown(ctx, reply, req)
 	case protocol.MethodExit:
@@ -71,22 +82,8 @@ func (s *Server) handleInitialize(ctx context.Context, reply jsonrpc2.Replier, r
 	log.Printf("%s%s Loaded config: %s", logging.LogTagLSP, logging.LogTagServer, s.serverConfig.RawData)
 
 	resp := protocol.InitializeResult{
-		Capabilities: protocol.ServerCapabilities{
-			TextDocumentSync: &protocol.TextDocumentSyncOptions{
-				Change:    protocol.TextDocumentSyncKindFull,
-				OpenClose: true,
-				Save:      &protocol.SaveOptions{IncludeText: false},
-			},
-			ExecuteCommandProvider: &protocol.ExecuteCommandOptions{
-				Commands: []string{
-					"php-diagls.doSomething",
-				},
-			},
-		},
-		ServerInfo: &protocol.ServerInfo{
-			Name:    string(config.Name),
-			Version: string(config.Version),
-		},
+		Capabilities: serverCapabilities(),
+		ServerInfo:   serverInfo(),
 	}
 
 	log.Printf("%s%s Sending initialize response: %+v", logging.LogTagLSP, logging.LogTagServer, resp)
@@ -110,17 +107,33 @@ func (s *Server) handleExecuteCommand(ctx context.Context, reply jsonrpc2.Replie
 	log.Printf("%s%s Executing command: %s", logging.LogTagLSP, logging.LogTagServer, params.Command)
 
 	switch params.Command {
-		case "php-diagls.showConfig":
-			return s.handleShowConfigCommand(ctx, reply)
-		default:
-			return reply(ctx, nil, fmt.Errorf("unknown command: %s", params.Command))
-		}
+	case getFullLspCommandName(LspCommandNameShowConfig):
+		return s.handleShowConfigCommand(ctx, reply)
+	default:
+		return reply(ctx, nil, fmt.Errorf("unknown command: %s", params.Command))
+	}
 }
 
 func (s *Server) handleShowConfigCommand(ctx context.Context, reply jsonrpc2.Replier) error {
 	s.showWindowMessage(ctx, protocol.MessageTypeInfo, fmt.Sprintf("Current configuration: %s", s.serverConfig.RawData))
 
 	return reply(ctx, nil, nil)
+}
+
+func (s *Server) handleDidOpen(ctx context.Context, _ jsonrpc2.Replier, req jsonrpc2.Request) error {
+	var params protocol.DidOpenTextDocumentParams
+	if err := json.Unmarshal(req.Params(), &params); err != nil {
+		log.Printf("%s%s Error unmarshaling didOpen params: %v", logging.LogTagLSP, logging.LogTagServer, err)
+		return err
+	}
+
+	log.Printf("%s%s Document opened: URI=%s, LanguageID=%s, Version=%d", logging.LogTagLSP, logging.LogTagServer, params.TextDocument.URI, params.TextDocument.LanguageID, params.TextDocument.Version)
+
+	var diagnostics []protocol.Diagnostic
+	diagnostics = mockDiagnostics(diagnostics)
+
+	s.publishDiagnostics(ctx, params.TextDocument.URI, diagnostics)
+	return nil
 }
 
 func (s *Server) handleShutdown(ctx context.Context, reply jsonrpc2.Replier, _ jsonrpc2.Request) error {
@@ -139,5 +152,16 @@ func (s *Server) showWindowMessage(ctx context.Context, messageType protocol.Mes
 	params := &protocol.ShowMessageParams{Type: messageType, Message: message}
 	if err := s.conn.Notify(ctx, protocol.MethodWindowShowMessage, params); err != nil {
 		log.Printf("%s%s Failed to send window message: %v", logging.LogTagLSP, logging.LogTagServer, err)
+	}
+}
+
+func (s *Server) publishDiagnostics(ctx context.Context, uri protocol.DocumentURI, diagnostics []protocol.Diagnostic) {
+	params := protocol.PublishDiagnosticsParams{
+		URI:         uri,
+		Diagnostics: utils.EnsureDiagnosticsArray(diagnostics),
+	}
+
+	if err := s.conn.Notify(ctx, protocol.MethodTextDocumentPublishDiagnostics, params); err != nil {
+		log.Printf("%s%s Failed to publish diagnostics: %v", logging.LogTagLSP, logging.LogTagServer, err)
 	}
 }
