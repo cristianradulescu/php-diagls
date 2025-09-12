@@ -1,4 +1,4 @@
-package server
+package diagnostics
 
 import (
 	"github.com/cristianradulescu/php-diagls/internal/config"

@@ -7,6 +7,7 @@ import (
 	"log"
 
 	"github.com/cristianradulescu/php-diagls/internal/config"
+	"github.com/cristianradulescu/php-diagls/internal/diagnostics"
 	"github.com/cristianradulescu/php-diagls/internal/logging"
 	"github.com/cristianradulescu/php-diagls/internal/utils"
 	"go.lsp.dev/jsonrpc2"
@@ -40,14 +41,14 @@ func (s *Server) Handle(ctx context.Context, reply jsonrpc2.Replier, req jsonrpc
 		return s.handleExecuteCommand(ctx, reply, req)
 	case protocol.MethodTextDocumentDidOpen:
 		return s.handleDidOpen(ctx, reply, req)
-	// case protocol.MethodTextDocumentDidChange:
-	// 	return s.handleDidChange(ctx, reply, req)
-	// case protocol.MethodTextDocumentDidClose:
-	// 	return s.handleDidClose(ctx, reply, req)
-	// case protocol.MethodTextDocumentDidSave:
-	// 	return s.handleDidSave(ctx, reply, req)
-	// case protocol.MethodWorkspaceDidChangeWatchedFiles:
-	// 	return s.handleDidChangeWatchedFiles(ctx, reply, req)
+	case protocol.MethodTextDocumentDidChange:
+		return s.handleDidChange(ctx, reply, req)
+		// case protocol.MethodTextDocumentDidClose:
+		// 	return s.handleDidClose(ctx, reply, req)
+		// case protocol.MethodTextDocumentDidSave:
+		// 	return s.handleDidSave(ctx, reply, req)
+		// case protocol.MethodWorkspaceDidChangeWatchedFiles:
+		// 	return s.handleDidChangeWatchedFiles(ctx, reply, req)
 	case protocol.MethodShutdown:
 		return s.handleShutdown(ctx, reply, req)
 	case protocol.MethodExit:
@@ -123,16 +124,28 @@ func (s *Server) handleShowConfigCommand(ctx context.Context, reply jsonrpc2.Rep
 func (s *Server) handleDidOpen(ctx context.Context, _ jsonrpc2.Replier, req jsonrpc2.Request) error {
 	var params protocol.DidOpenTextDocumentParams
 	if err := json.Unmarshal(req.Params(), &params); err != nil {
-		log.Printf("%s%s Error unmarshaling didOpen params: %v", logging.LogTagLSP, logging.LogTagServer, err)
+		log.Printf("%s%s Error unmarshaling %s params: %v", logging.LogTagLSP, logging.LogTagServer, req.Method(), err)
+
 		return err
 	}
 
-	log.Printf("%s%s Document opened: URI=%s, LanguageID=%s, Version=%d", logging.LogTagLSP, logging.LogTagServer, params.TextDocument.URI, params.TextDocument.LanguageID, params.TextDocument.Version)
-
-	var diagnostics []protocol.Diagnostic
-	diagnostics = mockDiagnostics(diagnostics)
-
+	diagnostics := s.collectDiagnostics(ctx, params.TextDocument.URI.Filename())
 	s.publishDiagnostics(ctx, params.TextDocument.URI, diagnostics)
+
+	return nil
+}
+
+func (s *Server) handleDidChange(ctx context.Context, _ jsonrpc2.Replier, req jsonrpc2.Request) error {
+	var params protocol.DidChangeTextDocumentParams
+	if err := json.Unmarshal(req.Params(), &params); err != nil {
+		log.Printf("%s%s Error unmarshaling %s params: %v", logging.LogTagLSP, logging.LogTagServer, req.Method(), err)
+
+		return err
+	}
+
+	diagnostics := s.collectDiagnostics(ctx, params.TextDocument.URI.Filename())
+	s.publishDiagnostics(ctx, params.TextDocument.URI, diagnostics)
+
 	return nil
 }
 
@@ -164,4 +177,39 @@ func (s *Server) publishDiagnostics(ctx context.Context, uri protocol.DocumentUR
 	if err := s.conn.Notify(ctx, protocol.MethodTextDocumentPublishDiagnostics, params); err != nil {
 		log.Printf("%s%s Failed to publish diagnostics: %v", logging.LogTagLSP, logging.LogTagServer, err)
 	}
+}
+
+func (s *Server) loadDiagnosticsProviders() []diagnostics.DiagnosticsProvider {
+	providers := []diagnostics.DiagnosticsProvider{}
+
+	PhpCsFixerProvider := &diagnostics.PhpCsFixer{}
+	PhpCsFixerProvider.SetEnabled(s.serverConfig.DiagnosticsProviders[PhpCsFixerProvider.Id()].Enabled)
+
+	return append(
+		providers,
+		PhpCsFixerProvider,
+	)
+}
+
+func (s *Server) collectDiagnostics(ctx context.Context, filePath string) []protocol.Diagnostic {
+	var diagnostics []protocol.Diagnostic
+	for _, provider := range s.loadDiagnosticsProviders() {
+		if !provider.IsEnabled() {
+			log.Printf("%s%s Diagnostics provider '%s' is disabled, skipping", logging.LogTagLSP, logging.LogTagServer, provider)
+			continue
+		}
+
+		log.Printf("%s%s Running diagnostics provider: %s", logging.LogTagLSP, logging.LogTagServer, provider.Name())
+
+		providerDiagnostics, err := provider.Analyze(filePath)
+		if err != nil {
+			log.Printf("%s%s Error running diagnostics provider '%s': %v", logging.LogTagLSP, logging.LogTagServer, provider, err)
+			s.showWindowMessage(ctx, protocol.MessageTypeError, fmt.Sprintf("Error running diagnostics provider '%s': %v", provider, err))
+			continue
+		}
+
+		diagnostics = append(diagnostics, providerDiagnostics...)
+	}
+
+	return diagnostics
 }
