@@ -185,9 +185,13 @@ func (s *Server) loadDiagnosticsProviders() []diagnostics.DiagnosticsProvider {
 	PhpCsFixerProvider := &diagnostics.PhpCsFixer{}
 	PhpCsFixerProvider.SetEnabled(s.serverConfig.DiagnosticsProviders[PhpCsFixerProvider.Id()].Enabled)
 
+	PhpStanProvider := &diagnostics.PhpStan{}
+	PhpStanProvider.SetEnabled(s.serverConfig.DiagnosticsProviders[PhpStanProvider.Id()].Enabled)
+
 	return append(
 		providers,
 		PhpCsFixerProvider,
+		PhpStanProvider,
 	)
 }
 

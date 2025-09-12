@@ -1,11 +1,10 @@
 package diagnostics
 
 import (
-	"github.com/cristianradulescu/php-diagls/internal/config"
 	"go.lsp.dev/protocol"
 )
 
-func mockDiagnostics(diagnostics []protocol.Diagnostic) []protocol.Diagnostic {
+func mockDiagnostics(provider DiagnosticsProvider, diagnostics []protocol.Diagnostic) []protocol.Diagnostic {
 	diagnostics = append(
 		diagnostics,
 		protocol.Diagnostic{
@@ -14,8 +13,12 @@ func mockDiagnostics(diagnostics []protocol.Diagnostic) []protocol.Diagnostic {
 				End:   protocol.Position{Line: 0, Character: 0},
 			},
 			Severity: protocol.DiagnosticSeverityWarning,
-			Source:   config.Name,
+			Source:   provider.Id(),
 			Message:  "[TEST] Code style violation on first line",
+			Code:     "TEST001",
+			CodeDescription: &protocol.CodeDescription{
+				Href: "https://example.com/rules/TEST001",
+			},
 		},
 		protocol.Diagnostic{
 			Range: protocol.Range{
@@ -23,8 +26,12 @@ func mockDiagnostics(diagnostics []protocol.Diagnostic) []protocol.Diagnostic {
 				End:   protocol.Position{Line: 3, Character: 0},
 			},
 			Severity: protocol.DiagnosticSeverityWarning,
-			Source:   config.Name,
+			Source:   provider.Id(),
 			Message:  "[TEST] Code style violation one line 4",
+			Code:     "TEST004",
+			CodeDescription: &protocol.CodeDescription{
+				Href: "https://example.com/rules/TEST004",
+			},
 		},
 	)
 
