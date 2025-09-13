@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/cristianradulescu/php-diagls/internal/config"
 	"github.com/cristianradulescu/php-diagls/internal/diagnostics"
@@ -43,12 +44,12 @@ func (s *Server) Handle(ctx context.Context, reply jsonrpc2.Replier, req jsonrpc
 		return s.handleDidOpen(ctx, reply, req)
 	case protocol.MethodTextDocumentDidChange:
 		return s.handleDidChange(ctx, reply, req)
-		// case protocol.MethodTextDocumentDidClose:
-		// 	return s.handleDidClose(ctx, reply, req)
-		// case protocol.MethodTextDocumentDidSave:
-		// 	return s.handleDidSave(ctx, reply, req)
-		// case protocol.MethodWorkspaceDidChangeWatchedFiles:
-		// 	return s.handleDidChangeWatchedFiles(ctx, reply, req)
+	case protocol.MethodTextDocumentDidClose:
+		return s.handleDidClose(ctx, reply, req)
+	case protocol.MethodTextDocumentDidSave:
+		return s.handleDidSave(ctx, reply, req)
+	case protocol.MethodWorkspaceDidChangeWatchedFiles:
+		return s.handleDidChangeWatchedFiles(ctx, reply, req)
 	case protocol.MethodShutdown:
 		return s.handleShutdown(ctx, reply, req)
 	case protocol.MethodExit:
@@ -149,6 +150,57 @@ func (s *Server) handleDidChange(ctx context.Context, _ jsonrpc2.Replier, req js
 	return nil
 }
 
+func (s *Server) handleDidSave(ctx context.Context, _ jsonrpc2.Replier, req jsonrpc2.Request) error {
+	var params protocol.DidSaveTextDocumentParams
+	if err := json.Unmarshal(req.Params(), &params); err != nil {
+		log.Printf("%s%s Error unmarshaling %s params: %v", logging.LogTagLSP, logging.LogTagServer, req.Method(), err)
+
+		return err
+	}
+
+	diagnostics := s.collectDiagnostics(ctx, params.TextDocument.URI.Filename())
+	s.publishDiagnostics(ctx, params.TextDocument.URI, diagnostics)
+
+	return nil
+}
+
+func (s *Server) handleDidChangeWatchedFiles(ctx context.Context, _ jsonrpc2.Replier, req jsonrpc2.Request) error {
+	var params protocol.DidChangeWatchedFilesParams
+	if err := json.Unmarshal(req.Params(), &params); err != nil {
+		log.Printf("%s%s Error unmarshaling %s params: %v", logging.LogTagLSP, logging.LogTagServer, req.Method(), err)
+
+		return err
+	}
+
+	for _, change := range params.Changes {
+		if strings.HasSuffix(string(change.URI), ".php") {
+			switch change.Type {
+			case protocol.FileChangeTypeChanged, protocol.FileChangeTypeCreated:
+				diagnostics := s.collectDiagnostics(ctx, change.URI.Filename())
+				s.publishDiagnostics(ctx, change.URI, diagnostics)
+			case protocol.FileChangeTypeDeleted:
+				s.publishDiagnostics(ctx, change.URI, []protocol.Diagnostic{})
+			}
+		}
+	}
+
+	return nil
+}
+
+func (s *Server) handleDidClose(ctx context.Context, _ jsonrpc2.Replier, req jsonrpc2.Request) error {
+	var params protocol.DidCloseTextDocumentParams
+	if err := json.Unmarshal(req.Params(), &params); err != nil {
+		log.Printf("%s%s Error unmarshaling %s params: %v", logging.LogTagLSP, logging.LogTagServer, req.Method(), err)
+
+		return err
+	}
+
+	diagnostics := s.collectDiagnostics(ctx, params.TextDocument.URI.Filename())
+	s.publishDiagnostics(ctx, params.TextDocument.URI, diagnostics)
+
+	return nil
+}
+
 func (s *Server) handleShutdown(ctx context.Context, reply jsonrpc2.Replier, _ jsonrpc2.Request) error {
 	log.Printf("%s%s Performing cleanup before shutdown", logging.LogTagLSP, logging.LogTagServer)
 
@@ -209,7 +261,7 @@ func (s *Server) collectDiagnostics(ctx context.Context, filePath string) []prot
 			continue
 		}
 
-		log.Printf("%s%s Running diagnostics provider: %s", logging.LogTagLSP, logging.LogTagServer, provider.Name())
+		log.Printf("%s%s Running diagnostics provider: %s", logging.LogTagLSP, logging.LogTagServer, provider.Id())
 
 		providerDiagnostics, err := provider.Analyze(filePath)
 		if err != nil {
