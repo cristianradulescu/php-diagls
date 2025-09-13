@@ -4,16 +4,21 @@ import (
 	"go.lsp.dev/protocol"
 )
 
+const (
+	PhpCsFixerProviderId string = "phpcsfixer"
+	PhpCsFixerProviderName string = "PHP Coding Standards Fixer"
+)
+
 type PhpCsFixer struct {
 	enabled bool
 }
 
 func (dp *PhpCsFixer) Id() string {
-	return "phpcsfixer"
+	return PhpCsFixerProviderId
 }
 
 func (dp *PhpCsFixer) Name() string {
-	return "PHP Coding Standards Fixer"
+	return PhpCsFixerProviderName
 }
 
 func (dp *PhpCsFixer) IsEnabled() bool {
@@ -29,4 +34,11 @@ func (dp *PhpCsFixer) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 	diagnostics = mockDiagnostics(dp, diagnostics)
 
 	return diagnostics, nil
+}
+
+// constructor
+func NewPhpCsFixer() *PhpCsFixer {
+	return &PhpCsFixer{
+		enabled: true,
+	}
 }

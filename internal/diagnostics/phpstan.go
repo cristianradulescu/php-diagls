@@ -4,16 +4,21 @@ import (
 	"go.lsp.dev/protocol"
 )
 
+const(
+	PhpStanProviderId string = "phpstan"
+	PhpStanProviderName string = "PHPStan Static Analysis"
+)
+
 type PhpStan struct {
 	enabled bool
 }
 
 func (dp *PhpStan) Id() string {
-	return "phpstan"
+	return PhpStanProviderId
 }
 
 func (dp *PhpStan) Name() string {
-	return "PHPStan Static Analysis Tool"
+	return PhpStanProviderName
 }
 
 func (dp *PhpStan) IsEnabled() bool {
@@ -29,4 +34,10 @@ func (dp *PhpStan) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 	diagnostics = mockDiagnostics(dp, diagnostics)
 
 	return diagnostics, nil
+}
+
+func NewPhpStan() *PhpStan {
+	return &PhpStan{
+		enabled: true,
+	}
 }

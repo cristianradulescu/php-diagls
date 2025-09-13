@@ -182,17 +182,23 @@ func (s *Server) publishDiagnostics(ctx context.Context, uri protocol.DocumentUR
 func (s *Server) loadDiagnosticsProviders() []diagnostics.DiagnosticsProvider {
 	providers := []diagnostics.DiagnosticsProvider{}
 
-	PhpCsFixerProvider := &diagnostics.PhpCsFixer{}
-	PhpCsFixerProvider.SetEnabled(s.serverConfig.DiagnosticsProviders[PhpCsFixerProvider.Id()].Enabled)
+	// Initialize only enabled diagnostics providers
+	for id, providerConfig := range s.serverConfig.DiagnosticsProviders {
+		if !providerConfig.Enabled {
+			log.Printf("%s%s Diagnostics provider '%s' is disabled, skipping", logging.LogTagLSP, logging.LogTagServer, id)
+			continue
+		}
 
-	PhpStanProvider := &diagnostics.PhpStan{}
-	PhpStanProvider.SetEnabled(s.serverConfig.DiagnosticsProviders[PhpStanProvider.Id()].Enabled)
+		provider := diagnostics.NewDiagnosticsProvider(id)
+		if provider == nil {
+			log.Printf("%s%s Unknown diagnostics provider ID: %s", logging.LogTagLSP, logging.LogTagServer, id)
+			continue
+		}
 
-	return append(
-		providers,
-		PhpCsFixerProvider,
-		PhpStanProvider,
-	)
+		providers = append(providers, provider)
+	}
+
+	return providers
 }
 
 func (s *Server) collectDiagnostics(ctx context.Context, filePath string) []protocol.Diagnostic {
