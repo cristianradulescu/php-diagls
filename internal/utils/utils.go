@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/cristianradulescu/php-diagls/internal/config"
 	"go.lsp.dev/protocol"
@@ -40,4 +41,14 @@ func EnsureDiagnosticsArray(diagnostics []protocol.Diagnostic) []protocol.Diagno
 		return make([]protocol.Diagnostic, 0)
 	}
 	return diagnostics
+}
+
+func SnakeCaseToHumanReadable(stringToConvert string) string {
+	parts := strings.Split(stringToConvert, "_")
+	runes := []rune(parts[0])
+	runes[0] = unicode.ToUpper(runes[0])
+	parts[0] = string(runes)
+
+	return strings.Join(parts, " ")
+
 }

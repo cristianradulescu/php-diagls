@@ -22,7 +22,7 @@ func NewDiagnosticsProvider(providerId string, providerConfig config.Diagnostics
 
 	switch providerId {
 	case PhpCsFixerProviderId:
-		return NewPhpCsFixer(), nil
+		return NewPhpCsFixer(providerConfig), nil
 	case PhpStanProviderId:
 		return NewPhpStan(), nil
 	default:
