@@ -207,7 +207,7 @@ func (s *Server) handleShutdown(ctx context.Context, reply jsonrpc2.Replier, _ j
 	return reply(ctx, nil, nil)
 }
 
-func (s *Server) handleExit(ctx context.Context, _ jsonrpc2.Replier, _ jsonrpc2.Request) error {
+func (s *Server) handleExit(_ context.Context, _ jsonrpc2.Replier, _ jsonrpc2.Request) error {
 	log.Printf("%s%s Exiting server", logging.LogTagLSP, logging.LogTagServer)
 
 	return s.conn.Close()
@@ -234,16 +234,17 @@ func (s *Server) publishDiagnostics(ctx context.Context, uri protocol.DocumentUR
 func (s *Server) loadDiagnosticsProviders() []diagnostics.DiagnosticsProvider {
 	providers := []diagnostics.DiagnosticsProvider{}
 
-	// Initialize only enabled diagnostics providers
 	for id, providerConfig := range s.serverConfig.DiagnosticsProviders {
+		// Initialize only enabled diagnostics providers
 		if !providerConfig.Enabled {
 			log.Printf("%s%s Diagnostics provider '%s' is disabled, skipping", logging.LogTagLSP, logging.LogTagServer, id)
 			continue
 		}
 
-		provider := diagnostics.NewDiagnosticsProvider(id)
-		if provider == nil {
-			log.Printf("%s%s Unknown diagnostics provider ID: %s", logging.LogTagLSP, logging.LogTagServer, id)
+		provider, err := diagnostics.NewDiagnosticsProvider(id, providerConfig)
+		if err != nil {
+			s.showWindowMessage(context.Background(), protocol.MessageTypeError, fmt.Sprintf("%v", err))
+
 			continue
 		}
 
@@ -256,16 +257,10 @@ func (s *Server) loadDiagnosticsProviders() []diagnostics.DiagnosticsProvider {
 func (s *Server) collectDiagnostics(ctx context.Context, filePath string) []protocol.Diagnostic {
 	var diagnostics []protocol.Diagnostic
 	for _, provider := range s.loadDiagnosticsProviders() {
-		if !provider.IsEnabled() {
-			log.Printf("%s%s Diagnostics provider '%s' is disabled, skipping", logging.LogTagLSP, logging.LogTagServer, provider)
-			continue
-		}
-
 		log.Printf("%s%s Running diagnostics provider: %s", logging.LogTagLSP, logging.LogTagServer, provider.Id())
 
 		providerDiagnostics, err := provider.Analyze(filePath)
 		if err != nil {
-			log.Printf("%s%s Error running diagnostics provider '%s': %v", logging.LogTagLSP, logging.LogTagServer, provider, err)
 			s.showWindowMessage(ctx, protocol.MessageTypeError, fmt.Sprintf("Error running diagnostics provider '%s': %v", provider, err))
 			continue
 		}

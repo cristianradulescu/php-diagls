@@ -4,14 +4,12 @@ import (
 	"go.lsp.dev/protocol"
 )
 
-const(
-	PhpStanProviderId string = "phpstan"
+const (
+	PhpStanProviderId   string = "phpstan"
 	PhpStanProviderName string = "PHPStan Static Analysis"
 )
 
-type PhpStan struct {
-	enabled bool
-}
+type PhpStan struct{}
 
 func (dp *PhpStan) Id() string {
 	return PhpStanProviderId
@@ -19,14 +17,6 @@ func (dp *PhpStan) Id() string {
 
 func (dp *PhpStan) Name() string {
 	return PhpStanProviderName
-}
-
-func (dp *PhpStan) IsEnabled() bool {
-	return dp.enabled
-}
-
-func (dp *PhpStan) SetEnabled(enabled bool) {
-	dp.enabled = enabled
 }
 
 func (dp *PhpStan) Analyze(filePath string) ([]protocol.Diagnostic, error) {
@@ -37,7 +27,5 @@ func (dp *PhpStan) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 }
 
 func NewPhpStan() *PhpStan {
-	return &PhpStan{
-		enabled: true,
-	}
+	return &PhpStan{}
 }
