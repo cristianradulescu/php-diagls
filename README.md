@@ -12,7 +12,7 @@ A Language Server Protocol (LSP) implementation for PHP that provides dynamic di
 1. Clone this repository
 2. Build the LSP server:
    ```bash
-   go build -o php-diagls cmd/main.go
+   go build -o php-diagls
    ```
 
 ## Configuration
@@ -53,28 +53,10 @@ Create a `.php-diagls.json` file in your project root directory to configure the
 
 #### Neovim
 
-**With nvim-lspconfig**
-
-```lua
-local lspconfig = require('lspconfig')
-
-lspconfig.php_diagls = {
-  cmd = { '/path/to/php-diagls', '-stdin' },
-  filetypes = { 'php' },
-  root_dir = function(fname)
-    return lspconfig.util.find_git_ancestor(fname) or vim.fn.getcwd()
-  end,
-}
-
-lspconfig.php_diagls.setup{}
-```
-
-** With Neovim's built-in LSP client**
-
 ```lua
 -- lua/lsp/php_diagls.lua
 return {
-  cmd = { '<path_to_lsp_binary>' },
+  cmd = { '/path/to/php-diagls' },
   root_markers = { 'composer.json', '.git' },
   filetypes = { 'php'},
 }
@@ -83,6 +65,6 @@ return {
 Then in the LSP configuration:
 
 ```lua
-vim.lsp.enable({ <my_other_lsps>, 'php-diagls'})
+vim.lsp.enable({'php-diagls'})
 ```
 
