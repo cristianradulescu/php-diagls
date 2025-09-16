@@ -12,7 +12,7 @@ A Language Server Protocol (LSP) implementation for PHP that provides dynamic di
 1. Clone this repository
 2. Build the LSP server:
    ```bash
-   go build -o php-diagls cmd/main.go
+   go build -o php-diagls main.go
    ```
 
 ## Configuration
@@ -69,7 +69,7 @@ lspconfig.php_diagls = {
 lspconfig.php_diagls.setup{}
 ```
 
-** With Neovim's built-in LSP client**
+**With Neovim's built-in LSP client**
 
 ```lua
 -- lua/lsp/php_diagls.lua
