@@ -20,10 +20,9 @@ func main() {
 
 	if stdin {
 		log.SetOutput(os.Stderr)
-		
+
 	}
 	log.Printf("%s%s Starting PHP Diagnostics LSP server", logging.LogTagLSP, logging.LogTagMain)
-
 
 	stream := jsonrpc2.NewStream(struct {
 		io.Reader

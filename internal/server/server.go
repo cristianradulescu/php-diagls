@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 
 	"github.com/cristianradulescu/php-diagls/internal/config"
@@ -24,7 +25,8 @@ type Server struct {
 // New creates a new LSP server instance
 func New(conn jsonrpc2.Conn) *Server {
 	s := &Server{
-		conn: conn,
+		conn:         conn,
+		serverConfig: &config.Config{},
 	}
 
 	return s
@@ -71,24 +73,26 @@ func (s *Server) handleInitialize(ctx context.Context, reply jsonrpc2.Replier, r
 	}
 
 	log.Printf("%s%s Client info: name=%s, version=%s", logging.LogTagLSP, logging.LogTagServer, params.ClientInfo.Name, params.ClientInfo.Version)
-	// log.Printf("%s%s WorkspaceFolders=%s", logging.LogTagLSP, logging.LogTagServer, params.WorkspaceFolders)
-	// log.Printf("%s%s RootURI=%s", logging.LogTagLSP, logging.LogTagServer, params.RootURI.Filename())
-	// log.Printf("%s%s RootPath=%s", logging.LogTagLSP, logging.LogTagServer, params.RootPath)
 
-	// Load configuration
-	serverConfig, err := config.LoadConfig(params.WorkspaceFolders[0].Name)
-	if err != nil {
-		log.Fatalf("%s%s Error loading config: %v", logging.LogTagLSP, logging.LogTagServer, err)
+	// Load configuration. Show warning if not found and exit
+	if !s.serverConfig.IsInitialized() {
+		serverConfig, err := s.serverConfig.LoadConfig(params.WorkspaceFolders[0].Name)
+		if err != nil {
+			log.Printf("%s%s Error loading config: %v", logging.LogTagLSP, logging.LogTagServer, err)
+
+			s.showWindowMessage(ctx, protocol.MessageTypeWarning, fmt.Sprintf("%s", err))
+			s.showWindowMessage(ctx, protocol.MessageTypeWarning, "Exiting...")
+			os.Exit(0)
+		}
+		s.serverConfig = serverConfig
 	}
-	s.serverConfig = serverConfig
-	log.Printf("%s%s Loaded config: %s", logging.LogTagLSP, logging.LogTagServer, s.serverConfig.RawData)
 
 	resp := protocol.InitializeResult{
 		Capabilities: serverCapabilities(),
 		ServerInfo:   serverInfo(),
 	}
 
-	log.Printf("%s%s Sending initialize response: %+v", logging.LogTagLSP, logging.LogTagServer, resp)
+	// log.Printf("%s%s Sending initialize response: %+v", logging.LogTagLSP, logging.LogTagServer, resp)
 
 	return reply(ctx, resp, nil)
 }
@@ -237,7 +241,6 @@ func (s *Server) loadDiagnosticsProviders() []diagnostics.DiagnosticsProvider {
 	for id, providerConfig := range s.serverConfig.DiagnosticsProviders {
 		// Initialize only enabled diagnostics providers
 		if !providerConfig.Enabled {
-			log.Printf("%s%s Diagnostics provider '%s' is disabled, skipping", logging.LogTagLSP, logging.LogTagServer, id)
 			continue
 		}
 
@@ -257,8 +260,6 @@ func (s *Server) loadDiagnosticsProviders() []diagnostics.DiagnosticsProvider {
 func (s *Server) collectDiagnostics(ctx context.Context, filePath string) []protocol.Diagnostic {
 	var diagnostics []protocol.Diagnostic
 	for _, provider := range s.loadDiagnosticsProviders() {
-		log.Printf("%s%s Running diagnostics provider: %s", logging.LogTagLSP, logging.LogTagServer, provider.Id())
-
 		providerDiagnostics, err := provider.Analyze(filePath)
 		if err != nil {
 			s.showWindowMessage(ctx, protocol.MessageTypeError, fmt.Sprintf("Error running diagnostics provider '%s': %v", provider, err))

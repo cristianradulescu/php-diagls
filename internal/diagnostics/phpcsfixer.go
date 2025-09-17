@@ -56,7 +56,7 @@ func (dp *PhpCsFixer) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 		fmt.Sprintf("%s fix %s --dry-run --diff --verbose --format json --config %s 2>/dev/null", dp.config.Path, relativeFilePath, dp.config.ConfigFile),
 	)
 	// TODO: process specific phpcsfixer exit codes
-	log.Printf("Full analysis cmd result: %s", string(fullAnalysisCmdOutput))
+	// log.Printf("Full analysis cmd result: %s", string(fullAnalysisCmdOutput))
 
 	var fullAnalysisResult OutputResult
 	if err := json.Unmarshal(fullAnalysisCmdOutput, &fullAnalysisResult); err != nil {
@@ -64,8 +64,7 @@ func (dp *PhpCsFixer) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 		return []protocol.Diagnostic{}, nil
 	}
 
-	log.Printf("Full analysis cmd result: %s", string(fullAnalysisCmdOutput))
-
+	// Run the analysis again, this time by specifying the rule. This should provide the better details for the diagnostics.
 	for _, file := range fullAnalysisResult.Files {
 		for _, rule := range file.Rules {
 			ruleAnalysisCmdOutput, _ := container.RunCommandInContainer(
@@ -73,7 +72,7 @@ func (dp *PhpCsFixer) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 				fmt.Sprintf("%s fix %s --dry-run --diff --verbose --format json --rules %s 2>/dev/null", dp.config.Path, relativeFilePath, rule),
 			)
 
-			log.Printf("Rule analysis cmd result: %s", string(ruleAnalysisCmdOutput))
+			// log.Printf("Rule analysis cmd result: %s", string(ruleAnalysisCmdOutput))
 
 			var ruleAnalysisResult OutputResult
 			if err := json.Unmarshal(ruleAnalysisCmdOutput, &ruleAnalysisResult); err != nil {
@@ -81,10 +80,11 @@ func (dp *PhpCsFixer) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 				return []protocol.Diagnostic{}, nil
 			}
 
+			// log.Printf("Rule analysis files: %v", ruleAnalysisResult.Files)
+
 			for _, file := range ruleAnalysisResult.Files {
 				if file.Diff != "" {
 					linesRange = dp.parseDiffForDiagnostics(file.Diff)
-
 					for _, lineRange := range linesRange {
 						diagnostics = append(diagnostics, protocol.Diagnostic{
 							Range:    lineRange,
@@ -94,6 +94,8 @@ func (dp *PhpCsFixer) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 							Code:     rule,
 						})
 					}
+				} else {
+					log.Printf("No diff for file %s", file)
 				}
 			}
 		}
@@ -112,9 +114,9 @@ func (dp *PhpCsFixer) parseDiffForDiagnostics(diff string) []protocol.Range {
 	var linesRange []protocol.Range
 
 	lines := strings.Split(diff, "\n")
-	originalLineNum, originalColNum, _, inHeader := 0, 0, 0, true
+	originalLineNum, originalColNum, lineChange := 0, 0, false
 
-	re := `@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@`
+	re := `@@\s+-(\d+),(\d+)?\s+\+(\d+),(\d+)?\s+@@`
 	reC := regexp.MustCompile(re)
 
 	for _, line := range lines {
@@ -132,11 +134,10 @@ func (dp *PhpCsFixer) parseDiffForDiagnostics(diff string) []protocol.Range {
 					originalColNum = origCol - 1
 				}
 			}
-			inHeader = false
 			continue
 		}
 
-		if inHeader || len(line) == 0 {
+		if len(line) == 0 {
 			continue
 		}
 
@@ -147,9 +148,18 @@ func (dp *PhpCsFixer) parseDiffForDiagnostics(diff string) []protocol.Range {
 				Start: protocol.Position{Line: uint32(originalLineNum), Character: uint32(originalColNum)},
 				End:   protocol.Position{Line: uint32(originalLineNum), Character: uint32(len(strings.TrimSpace(originalCode)))},
 			})
+			lineChange = true
 			originalLineNum++
 		case '+':
-			// We only mark the removed lines, as that's where the error is.
+			// If the line is changed, mark the removed lines, as that's where the error is.
+			// If a new line is added (ex: "blank_line_before_statement") we need the added line
+			if !lineChange {
+				linesRange = append(linesRange, protocol.Range{
+					Start: protocol.Position{Line: uint32(originalLineNum), Character: uint32(originalColNum)},
+					End:   protocol.Position{Line: uint32(originalLineNum), Character: uint32(originalColNum)},
+				})
+			}
+			originalLineNum++
 		case ' ':
 			originalLineNum++
 		}
@@ -173,10 +183,8 @@ func (dp *PhpCsFixer) explainRule(rule string) string {
 	// Keep only the actual description without example and config info
 	re1 := regexp.MustCompile(`Description of the .* rule.`)
 	ruleDescription := re1.ReplaceAllString(fullRuleDescription, "")
-	re := regexp.MustCompile(`(?s)Fixer is configurable.*`)
-	ruleDescription = re.ReplaceAllString(ruleDescription, "")
-
-	ruleDescription = fmt.Sprintf("%s%s", utils.SnakeCaseToHumanReadable(rule), ruleDescription)
+	re2 := regexp.MustCompile(`(?s)(Fixer is configurable|Fixer applying).*`)
+	ruleDescription = re2.ReplaceAllString(ruleDescription, "")
 
 	dp.ruleDescriptions.Store(rule, ruleDescription)
 

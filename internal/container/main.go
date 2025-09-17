@@ -8,7 +8,7 @@ import (
 )
 
 func RunCommandInContainer(containerName string, containerCmd string) ([]byte, error) {
-	log.Printf("Running cmd %s", containerCmd)
+	log.Printf("Running cmd: %s", containerCmd)
 	cmd := exec.Command("docker", "exec", containerName, "sh", "-c", containerCmd)
 	cmdOutput, err := cmd.Output()
 	if err != nil {
