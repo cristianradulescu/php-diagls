@@ -21,14 +21,12 @@ const (
 	PhpCsFixerProviderName string = "php-cs-fixer"
 )
 
-type OutputResultFiles []struct {
-	Name  string   `json:"name"`
-	Diff  string   `json:"diff"`
-	Rules []string `json:"appliedFixers"`
-}
-
-type OutputResult struct {
-	Files OutputResultFiles `json:"files"`
+type PhpCsFixerOutputResult struct {
+	Files []struct {
+		Name  string   `json:"name"`
+		Diff  string   `json:"diff"`
+		Rules []string `json:"appliedFixers"`
+	} `json:"files"`
 }
 
 type PhpCsFixer struct {
@@ -51,14 +49,18 @@ func (dp *PhpCsFixer) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 	projectRoot := utils.FindProjectRoot(filePath)
 	relativeFilePath, _ := filepath.Rel(projectRoot, filePath)
 
+	configArg := ""
+	if dp.config.ConfigFile != "" {
+		configArg = fmt.Sprintf("--config %s", dp.config.ConfigFile)
+	}
 	fullAnalysisCmdOutput, _ := container.RunCommandInContainer(
 		dp.config.Container,
-		fmt.Sprintf("%s fix %s --dry-run --diff --verbose --format json --config %s 2>/dev/null", dp.config.Path, relativeFilePath, dp.config.ConfigFile),
+		fmt.Sprintf("%s fix %s --dry-run --diff --verbose --format json %s 2>/dev/null", dp.config.Path, relativeFilePath, configArg),
 	)
 	// TODO: process specific phpcsfixer exit codes
 	// log.Printf("Full analysis cmd result: %s", string(fullAnalysisCmdOutput))
 
-	var fullAnalysisResult OutputResult
+	var fullAnalysisResult PhpCsFixerOutputResult
 	if err := json.Unmarshal(fullAnalysisCmdOutput, &fullAnalysisResult); err != nil {
 		log.Printf("Unmarshall err: %s", err)
 		return []protocol.Diagnostic{}, nil
@@ -74,7 +76,7 @@ func (dp *PhpCsFixer) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 
 			// log.Printf("Rule analysis cmd result: %s", string(ruleAnalysisCmdOutput))
 
-			var ruleAnalysisResult OutputResult
+			var ruleAnalysisResult PhpCsFixerOutputResult
 			if err := json.Unmarshal(ruleAnalysisCmdOutput, &ruleAnalysisResult); err != nil {
 				log.Printf("Unmarshall err: %s", err)
 				return []protocol.Diagnostic{}, nil

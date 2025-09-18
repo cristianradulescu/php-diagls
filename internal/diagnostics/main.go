@@ -24,7 +24,7 @@ func NewDiagnosticsProvider(providerId string, providerConfig config.Diagnostics
 	case PhpCsFixerProviderId:
 		return NewPhpCsFixer(providerConfig), nil
 	case PhpStanProviderId:
-		return NewPhpStan(), nil
+		return NewPhpStan(providerConfig), nil
 	default:
 		return nil, fmt.Errorf("unknown diagnostics provider: %s", providerId)
 	}
