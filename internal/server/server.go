@@ -259,6 +259,14 @@ func (s *Server) loadDiagnosticsProviders() []diagnostics.DiagnosticsProvider {
 
 func (s *Server) collectDiagnostics(ctx context.Context, filePath string) []protocol.Diagnostic {
 	var diagnostics []protocol.Diagnostic
+
+	ignoredDirs := []string{"/vendor/", "/var/cache/"}
+	for _, dir := range ignoredDirs {
+		if strings.Contains(filePath, dir) {
+			return diagnostics
+		}
+	}
+
 	for _, provider := range s.loadDiagnosticsProviders() {
 		providerDiagnostics, err := provider.Analyze(filePath)
 		if err != nil {
