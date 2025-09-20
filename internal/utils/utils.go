@@ -44,6 +44,11 @@ func EnsureDiagnosticsArray(diagnostics []protocol.Diagnostic) []protocol.Diagno
 }
 
 func SnakeCaseToHumanReadable(stringToConvert string) string {
+	stringToConvert = strings.Trim(stringToConvert, "_")
+	if stringToConvert == "" {
+		return ""
+	}
+
 	parts := strings.Split(stringToConvert, "_")
 	runes := []rune(parts[0])
 	runes[0] = unicode.ToUpper(runes[0])

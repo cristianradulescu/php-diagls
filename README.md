@@ -12,7 +12,7 @@ A Language Server Protocol (LSP) implementation for PHP that provides dynamic di
 1. Clone this repository
 2. Build the LSP server:
    ```bash
-   go build -o php-diagls
+   make build
    ```
 
 ## Configuration
@@ -57,7 +57,7 @@ Create a `.php-diagls.json` file in your project root directory to configure the
 -- lua/lsp/php_diagls.lua
 return {
   cmd = { '/path/to/php-diagls' },
-  root_markers = { 'composer.json', '.git' },
+  root_markers = { '.git', 'composer.json' },
   filetypes = { 'php'},
 }
 ```
