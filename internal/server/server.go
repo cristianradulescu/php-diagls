@@ -78,10 +78,10 @@ func (s *Server) handleInitialize(ctx context.Context, reply jsonrpc2.Replier, r
 	if !s.serverConfig.IsInitialized() {
 		serverConfig, err := s.serverConfig.LoadConfig(params.WorkspaceFolders[0].Name)
 		if err != nil {
-			log.Printf("%s%s Error loading config: %v", logging.LogTagLSP, logging.LogTagServer, err)
+			log.Printf("%s%s No config: %v", logging.LogTagLSP, logging.LogTagServer, err)
 
-			s.showWindowMessage(ctx, protocol.MessageTypeWarning, fmt.Sprintf("%s", err))
-			s.showWindowMessage(ctx, protocol.MessageTypeWarning, "Exiting...")
+			// s.showWindowMessage(ctx, protocol.MessageTypeWarning, fmt.Sprintf("%s", err))
+			// s.showWindowMessage(ctx, protocol.MessageTypeWarning, "Exiting...")
 			os.Exit(0)
 		}
 		s.serverConfig = serverConfig
@@ -91,8 +91,6 @@ func (s *Server) handleInitialize(ctx context.Context, reply jsonrpc2.Replier, r
 		Capabilities: serverCapabilities(),
 		ServerInfo:   serverInfo(),
 	}
-
-	// log.Printf("%s%s Sending initialize response: %+v", logging.LogTagLSP, logging.LogTagServer, resp)
 
 	return reply(ctx, resp, nil)
 }
