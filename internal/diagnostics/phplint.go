@@ -3,12 +3,14 @@ package diagnostics
 import (
 	"fmt"
 	"log"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/cristianradulescu/php-diagls/internal/config"
 	"github.com/cristianradulescu/php-diagls/internal/container"
+	"github.com/cristianradulescu/php-diagls/internal/utils"
 	"go.lsp.dev/protocol"
 )
 
@@ -32,11 +34,12 @@ func (dp *PhpLint) Name() string {
 func (dp *PhpLint) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 	var diagnostics []protocol.Diagnostic
 
-	// The -l command does not care about the project root, so we can just use the file path
-	// The output also contains the full file path, so no need to compute the relative path
+	projectRoot := utils.FindProjectRoot(filePath)
+	relativeFilePath, _ := filepath.Rel(projectRoot, filePath)
+
 	fullAnalysisCmdOutput, err := container.RunCommandInContainer(
 		dp.config.Container,
-		fmt.Sprintf("%s -l %s", dp.config.Path, filePath),
+		fmt.Sprintf("%s -l %s", dp.config.Path, relativeFilePath),
 	)
 
 	output := string(fullAnalysisCmdOutput)
@@ -44,8 +47,8 @@ func (dp *PhpLint) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 		return diagnostics, nil
 	}
 
-	// PHP Parse error:  syntax error, unexpected 'echo' (T_ECHO), expecting ',' or ';' in /path/to/file.php on line 5
-	re := regexp.MustCompile(`PHP Parse error:\s+(.*) in .* on line (\d+)`)
+	// Parse error:  syntax error, unexpected 'echo' (T_ECHO), expecting ',' or ';' in /path/to/file.php on line 5
+	re := regexp.MustCompile(`Parse error:\s+(.*) in .* on line (\d+)`)
 	matches := re.FindStringSubmatch(output)
 
 	if len(matches) == 3 {

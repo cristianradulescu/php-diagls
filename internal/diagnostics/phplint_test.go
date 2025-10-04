@@ -2,6 +2,9 @@ package diagnostics_test
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/cristianradulescu/php-diagls/internal/config"
@@ -11,26 +14,46 @@ import (
 )
 
 func TestPhpLint_Analyze(t *testing.T) {
+	// Create temporary directory structure for relative path testing
+	tempDir := t.TempDir()
+	projectRoot := filepath.Join(tempDir, "project")
+	subDir := filepath.Join(projectRoot, "src")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatalf("Failed to create test directories: %v", err)
+	}
+
+	// Create config file in project root
+	configPath := filepath.Join(projectRoot, config.ConfigFileName)
+	configContent := `{"diagnosticsProviders": {}}`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to create config file: %v", err)
+	}
+
 	tests := []struct {
-		name              string
-		commandOutput     []byte
-		commandError      error
-		expectedError     bool
-		expectedErrorContains string
-		expectedDiagnostics []protocol.Diagnostic
+		name                 string
+		filePath             string
+		commandOutput        []byte
+		commandError         error
+		expectedCommand      string
+		expectedError        bool
+		expectedDiagnostics  []protocol.Diagnostic
 	}{
 		{
-			name:              "no syntax errors",
-			commandOutput:     []byte("No syntax errors detected in /path/to/file.php"),
-			commandError:      nil,
-			expectedError:     false,
+			name:                "no syntax errors",
+			filePath:            filepath.Join(subDir, "file.php"),
+			commandOutput:       []byte("No syntax errors detected in /path/to/file.php"),
+			commandError:        nil,
+			expectedCommand:     fmt.Sprintf("/usr/bin/php -l %s", filepath.Join("src", "file.php")),
+			expectedError:       false,
 			expectedDiagnostics: []protocol.Diagnostic{},
 		},
 		{
-			name:          "syntax error",
-			commandOutput: []byte("PHP Parse error:  syntax error, unexpected 'echo' (T_ECHO), expecting ',' or ';' in /path/to/file.php on line 5"),
-			commandError:  nil,
-			expectedError: false,
+			name:                "syntax error",
+			filePath:            filepath.Join(subDir, "file.php"),
+			commandOutput:       []byte("Parse error:  syntax error, unexpected 'echo' (T_ECHO), expecting ',' or ';' in /path/to/file.php on line 5"),
+			commandError:        nil,
+			expectedCommand:     fmt.Sprintf("/usr/bin/php -l %s", filepath.Join("src", "file.php")),
+			expectedError:       false,
 			expectedDiagnostics: []protocol.Diagnostic{
 				{
 					Range:    protocol.Range{Start: protocol.Position{Line: 4, Character: 0}, End: protocol.Position{Line: 4, Character: 100}},
@@ -41,19 +64,23 @@ func TestPhpLint_Analyze(t *testing.T) {
 			},
 		},
 		{
-			name:          "command error",
-			commandOutput: []byte("some error"),
-			commandError:  errors.New("command failed"),
-			expectedError: false,
+			name:                "command error",
+			filePath:            filepath.Join(subDir, "file.php"),
+			commandOutput:       []byte("some error"),
+			commandError:        errors.New("command failed"),
+			expectedCommand:     fmt.Sprintf("/usr/bin/php -l %s", filepath.Join("src", "file.php")),
+			expectedError:       false,
 			expectedDiagnostics: []protocol.Diagnostic{},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			var capturedCommand string
 			// Mock the container command
 			originalRunCommand := container.RunCommandInContainer
 			container.RunCommandInContainer = func(containerName string, containerCmd string) ([]byte, error) {
+				capturedCommand = containerCmd
 				return tt.commandOutput, tt.commandError
 			}
 			defer func() { container.RunCommandInContainer = originalRunCommand }()
@@ -63,7 +90,11 @@ func TestPhpLint_Analyze(t *testing.T) {
 				Path:      "/usr/bin/php",
 			})
 
-			diagnostics, err := provider.Analyze("/path/to/file.php")
+			diagnostics, err := provider.Analyze(tt.filePath)
+
+			if capturedCommand != tt.expectedCommand {
+				t.Errorf("Expected command '%s', but got '%s'", tt.expectedCommand, capturedCommand)
+			}
 
 			if tt.expectedError {
 				if err == nil {
