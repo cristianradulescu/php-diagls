@@ -32,7 +32,12 @@ Create a `.php-diagls.json` file in your project root directory to configure the
       "enabled": false,
       "container": "my-php-container",
       "path": "/usr/local/bin/phpstan",
-      "configFile": "phpstan.neon" 
+      "configFile": "phpstan.neon"
+    },
+    "phplint": {
+      "enabled": true,
+      "container": "my-php-container",
+      "path": "/usr/local/bin/php"
     }
   }
 }
@@ -46,6 +51,12 @@ Create a `.php-diagls.json` file in your project root directory to configure the
 - **`container`**: Name of the Docker container where the diagnostic provider tool is installed
 - **`path`**: Full path to the diagnostic provider executable inside the container
 - **`config`**: (Optional) Path to the diagnostic provider configuration file inside the container
+
+#### PHP Lint (`phplint`)
+
+- **`enabled`**: Quick status toggle for the diagnostic provider
+- **`container`**: Name of the Docker container where the diagnostic provider tool is installed
+- **`path`**: Full path to the diagnostic provider executable inside the container
 
 ## Usage
 
