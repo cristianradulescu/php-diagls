@@ -43,7 +43,7 @@ func TestPhpLint_Analyze(t *testing.T) {
 			filePath:            filepath.Join(subDir, "file.php"),
 			commandOutput:       []byte("No syntax errors detected in /path/to/file.php"),
 			commandError:        nil,
-			expectedCommand:     fmt.Sprintf("/usr/bin/php -l %s", filepath.Join("src", "file.php")),
+			expectedCommand:     fmt.Sprintf("/usr/bin/php -l %s 2>&1", filepath.Join("src", "file.php")),
 			expectedError:       false,
 			expectedDiagnostics: []protocol.Diagnostic{},
 		},
@@ -52,7 +52,7 @@ func TestPhpLint_Analyze(t *testing.T) {
 			filePath:            filepath.Join(subDir, "file.php"),
 			commandOutput:       []byte("Parse error:  syntax error, unexpected 'echo' (T_ECHO), expecting ',' or ';' in /path/to/file.php on line 5"),
 			commandError:        nil,
-			expectedCommand:     fmt.Sprintf("/usr/bin/php -l %s", filepath.Join("src", "file.php")),
+			expectedCommand:     fmt.Sprintf("/usr/bin/php -l %s 2>&1", filepath.Join("src", "file.php")),
 			expectedError:       false,
 			expectedDiagnostics: []protocol.Diagnostic{
 				{
@@ -68,7 +68,7 @@ func TestPhpLint_Analyze(t *testing.T) {
 			filePath:            filepath.Join(subDir, "file.php"),
 			commandOutput:       []byte("some error"),
 			commandError:        errors.New("command failed"),
-			expectedCommand:     fmt.Sprintf("/usr/bin/php -l %s", filepath.Join("src", "file.php")),
+			expectedCommand:     fmt.Sprintf("/usr/bin/php -l %s 2>&1", filepath.Join("src", "file.php")),
 			expectedError:       false,
 			expectedDiagnostics: []protocol.Diagnostic{},
 		},

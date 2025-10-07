@@ -39,7 +39,7 @@ func (dp *PhpLint) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 
 	fullAnalysisCmdOutput, err := container.RunCommandInContainer(
 		dp.config.Container,
-		fmt.Sprintf("%s -l %s", dp.config.Path, relativeFilePath),
+		fmt.Sprintf("%s -l %s 2>&1", dp.config.Path, relativeFilePath),
 	)
 
 	output := string(fullAnalysisCmdOutput)
