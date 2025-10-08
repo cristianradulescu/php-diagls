@@ -32,6 +32,7 @@ type PhpCsFixerOutputResult struct {
 type PhpCsFixer struct {
 	config           config.DiagnosticsProvider
 	ruleDescriptions sync.Map
+	commandRunner    container.CommandRunner
 }
 
 func (dp *PhpCsFixer) Id() string {
@@ -53,9 +54,10 @@ func (dp *PhpCsFixer) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 	if dp.config.ConfigFile != "" {
 		configArg = fmt.Sprintf("--config %s", dp.config.ConfigFile)
 	}
-	fullAnalysisCmdOutput, _ := container.RunCommandInContainer(
+	fullAnalysisCmdOutput, _ := dp.commandRunner.Execute(
 		dp.config.Container,
 		fmt.Sprintf("%s fix %s --dry-run --diff --verbose --format json %s 2>/dev/null", dp.config.Path, relativeFilePath, configArg),
+		nil,
 	)
 	// TODO: process specific phpcsfixer exit codes
 	// log.Printf("Full analysis cmd result: %s", string(fullAnalysisCmdOutput))
@@ -69,9 +71,10 @@ func (dp *PhpCsFixer) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 	// Run the analysis again, this time by specifying the rule. This should provide the better details for the diagnostics.
 	for _, file := range fullAnalysisResult.Files {
 		for _, rule := range file.Rules {
-			ruleAnalysisCmdOutput, _ := container.RunCommandInContainer(
+			ruleAnalysisCmdOutput, _ := dp.commandRunner.Execute(
 				dp.config.Container,
 				fmt.Sprintf("%s fix %s --dry-run --diff --verbose --format json --rules %s 2>/dev/null", dp.config.Path, relativeFilePath, rule),
+				nil,
 			)
 
 			// log.Printf("Rule analysis cmd result: %s", string(ruleAnalysisCmdOutput))
@@ -106,9 +109,10 @@ func (dp *PhpCsFixer) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 	return diagnostics, nil
 }
 
-func NewPhpCsFixer(providerConfig config.DiagnosticsProvider) *PhpCsFixer {
+func NewPhpCsFixer(providerConfig config.DiagnosticsProvider, runner container.CommandRunner) *PhpCsFixer {
 	return &PhpCsFixer{
-		config: providerConfig,
+		config:        providerConfig,
+		commandRunner: runner,
 	}
 }
 
@@ -170,14 +174,38 @@ func (dp *PhpCsFixer) parseDiffForDiagnostics(diff string) []protocol.Range {
 	return linesRange
 }
 
+func (dp *PhpCsFixer) Format(filePath string) (string, error) {
+	configArg := ""
+	if dp.config.ConfigFile != "" {
+		configArg = fmt.Sprintf("--config %s", dp.config.ConfigFile)
+	}
+
+	fileContent, err := utils.GetFileContent(filePath)
+	if err != nil {
+		return "", fmt.Errorf("could not get file content: %w", err)
+	}
+
+	fullAnalysisCmdOutput, err := dp.commandRunner.Execute(
+		dp.config.Container,
+		fmt.Sprintf("%s fix --using-cache=no %s 2>/dev/null", dp.config.Path, configArg),
+		strings.NewReader(fileContent),
+	)
+	if err != nil {
+		return "", fmt.Errorf("could not format file: %w", err)
+	}
+
+	return string(fullAnalysisCmdOutput), nil
+}
+
 func (dp *PhpCsFixer) explainRule(rule string) string {
 	if cachedDescription, ok := dp.ruleDescriptions.Load(rule); ok {
 		return cachedDescription.(string)
 	}
 
-	fullRuleDescriptionOutput, _ := container.RunCommandInContainer(
+	fullRuleDescriptionOutput, _ := dp.commandRunner.Execute(
 		dp.config.Container,
 		fmt.Sprintf("%s describe %s 2>/dev/null", dp.config.Path, rule),
+		nil,
 	)
 
 	fullRuleDescription := strings.TrimSpace(string(fullRuleDescriptionOutput))

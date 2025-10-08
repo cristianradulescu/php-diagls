@@ -10,6 +10,7 @@ import (
 
 	"github.com/cristianradulescu/php-diagls/internal/config"
 	"github.com/cristianradulescu/php-diagls/internal/diagnostics"
+	"github.com/cristianradulescu/php-diagls/internal/formatter"
 	"github.com/cristianradulescu/php-diagls/internal/logging"
 	"github.com/cristianradulescu/php-diagls/internal/utils"
 	"go.lsp.dev/jsonrpc2"
@@ -50,6 +51,8 @@ func (s *Server) Handle(ctx context.Context, reply jsonrpc2.Replier, req jsonrpc
 		return s.handleDidClose(ctx, reply, req)
 	case protocol.MethodTextDocumentDidSave:
 		return s.handleDidSave(ctx, reply, req)
+	case protocol.MethodTextDocumentFormatting:
+		return s.handleFormatting(ctx, reply, req)
 	case protocol.MethodWorkspaceDidChangeWatchedFiles:
 		return s.handleDidChangeWatchedFiles(ctx, reply, req)
 	case protocol.MethodShutdown:
@@ -253,6 +256,52 @@ func (s *Server) loadDiagnosticsProviders() []diagnostics.DiagnosticsProvider {
 	}
 
 	return providers
+}
+
+func (s *Server) handleFormatting(ctx context.Context, reply jsonrpc2.Replier, req jsonrpc2.Request) error {
+	var params protocol.DocumentFormattingParams
+	if err := json.Unmarshal(req.Params(), &params); err != nil {
+		log.Printf("%s%s Error unmarshaling %s params: %v", logging.LogTagLSP, logging.LogTagServer, req.Method(), err)
+		return err
+	}
+
+	provider, err := s.loadFormattingProvider()
+	if err != nil {
+		log.Printf("%s%s Could not load formatting provider: %v", logging.LogTagLSP, logging.LogTagServer, err)
+		return reply(ctx, []protocol.TextEdit{}, nil)
+	}
+
+	fileFormatter := formatter.NewFormatter(provider)
+	edits, err := fileFormatter.Format(params.TextDocument.URI.Filename())
+	if err != nil {
+		s.showWindowMessage(ctx, protocol.MessageTypeError, fmt.Sprintf("Error formatting file: %v", err))
+		return reply(ctx, []protocol.TextEdit{}, nil)
+	}
+
+	return reply(ctx, edits, nil)
+}
+
+func (s *Server) loadFormattingProvider() (diagnostics.FormattingProvider, error) {
+	providerConfig, ok := s.serverConfig.DiagnosticsProviders[diagnostics.PhpCsFixerProviderId]
+	if !ok {
+		return nil, fmt.Errorf("php-cs-fixer provider not configured")
+	}
+
+	if !providerConfig.Enabled {
+		return nil, fmt.Errorf("php-cs-fixer provider not enabled")
+	}
+
+	provider, err := diagnostics.NewDiagnosticsProvider(diagnostics.PhpCsFixerProviderId, providerConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	formattingProvider, ok := provider.(diagnostics.FormattingProvider)
+	if !ok {
+		return nil, fmt.Errorf("provider %s does not support formatting", diagnostics.PhpCsFixerProviderId)
+	}
+
+	return formattingProvider, nil
 }
 
 func (s *Server) collectDiagnostics(ctx context.Context, filePath string) []protocol.Diagnostic {

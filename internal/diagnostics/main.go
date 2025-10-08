@@ -14,29 +14,34 @@ type DiagnosticsProvider interface {
 	Analyze(filePath string) ([]protocol.Diagnostic, error)
 }
 
+type FormattingProvider interface {
+	Format(filePath string) (string, error)
+}
+
 func NewDiagnosticsProvider(providerId string, providerConfig config.DiagnosticsProvider) (DiagnosticsProvider, error) {
-	err := validateProviderConfig(providerConfig)
+	runner := container.NewDockerCommandRunner()
+	err := validateProviderConfig(runner, providerConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize %s; error: %s", providerId, err)
 	}
 
 	switch providerId {
 	case PhpCsFixerProviderId:
-		return NewPhpCsFixer(providerConfig), nil
+		return NewPhpCsFixer(providerConfig, runner), nil
 	case PhpStanProviderId:
-		return NewPhpStan(providerConfig), nil
+		return NewPhpStan(providerConfig, runner), nil
 	default:
 		return nil, fmt.Errorf("unknown diagnostics provider: %s", providerId)
 	}
 }
 
-func validateProviderConfig(providerConfig config.DiagnosticsProvider) error {
+func validateProviderConfig(runner container.CommandRunner, providerConfig config.DiagnosticsProvider) error {
 	err := container.ValidateContainer(providerConfig.Container)
 	if err != nil {
 		return err
 	}
 
-	err = container.ValidateBinaryInContainer(providerConfig.Container, providerConfig.Path)
+	err = container.ValidateBinaryInContainer(runner, providerConfig.Container, providerConfig.Path)
 	if err != nil {
 		return err
 	}

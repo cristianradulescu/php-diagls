@@ -30,7 +30,8 @@ type PhpstanOutputResult struct {
 }
 
 type PhpStan struct {
-	config config.DiagnosticsProvider
+	config        config.DiagnosticsProvider
+	commandRunner container.CommandRunner
 }
 
 func (dp *PhpStan) Id() string {
@@ -51,9 +52,10 @@ func (dp *PhpStan) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 	if dp.config.ConfigFile != "" {
 		configArg = fmt.Sprintf("--configuration=%s", dp.config.ConfigFile)
 	}
-	fullAnalysisCmdOutput, _ := container.RunCommandInContainer(
+	fullAnalysisCmdOutput, _ := dp.commandRunner.Execute(
 		dp.config.Container,
 		fmt.Sprintf("%s analyze %s --memory-limit=-1 --no-progress --error-format=json %s 2>/dev/null", dp.config.Path, relativeFilePath, configArg),
+		nil,
 	)
 	// log.Printf("Full analysis cmd result: %s", string(fullAnalysisCmdOutput))
 
@@ -91,8 +93,9 @@ func (dp *PhpStan) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 	return diagnostics, nil
 }
 
-func NewPhpStan(providerConfig config.DiagnosticsProvider) *PhpStan {
+func NewPhpStan(providerConfig config.DiagnosticsProvider, runner container.CommandRunner) *PhpStan {
 	return &PhpStan{
-		config: providerConfig,
+		config:        providerConfig,
+		commandRunner: runner,
 	}
 }
