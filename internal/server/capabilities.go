@@ -25,6 +25,7 @@ func serverCapabilities() protocol.ServerCapabilities {
 				getFullLspCommandName(LspCommandNameShowConfig),
 			},
 		},
+		DocumentFormattingProvider: true,
 	}
 }
 

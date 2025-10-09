@@ -1,21 +1,41 @@
 package container
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"os/exec"
 	"strings"
 )
 
-func RunCommandInContainer(containerName string, containerCmd string) ([]byte, error) {
+func RunCommandInContainer(containerName string, containerCmd string, stdin ...string) ([]byte, error) {
 	log.Printf("Running cmd: %s", containerCmd)
-	cmd := exec.Command("docker", "exec", containerName, "sh", "-c", containerCmd)
-	cmdOutput, err := cmd.Output()
-	if err != nil {
-		return cmdOutput, fmt.Errorf("cmd returned error %s", err)
+
+	stdinInput := ""
+	if len(stdin) > 0 && stdin[0] != "" {
+		stdinInput = stdin[0]
 	}
 
-	return cmdOutput, nil
+	var cmd *exec.Cmd
+	if stdinInput != "" {
+		log.Printf("Using stdin input")
+		cmd = exec.Command("docker", "exec", "-i", containerName, "sh", "-c", containerCmd)
+		cmd.Stdin = strings.NewReader(stdinInput)
+	} else {
+		cmd = exec.Command("docker", "exec", containerName, "sh", "-c", containerCmd)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
+		return stdout.Bytes(), fmt.Errorf("cmd returned error %s: %s", err, stderr.String())
+	}
+
+	return stdout.Bytes(), nil
 }
 
 func ValidateContainer(containerName string) error {

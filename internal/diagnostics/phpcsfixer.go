@@ -12,6 +12,7 @@ import (
 
 	"github.com/cristianradulescu/php-diagls/internal/config"
 	"github.com/cristianradulescu/php-diagls/internal/container"
+	"github.com/cristianradulescu/php-diagls/internal/logging"
 	"github.com/cristianradulescu/php-diagls/internal/utils"
 	"go.lsp.dev/protocol"
 )
@@ -193,4 +194,61 @@ func (dp *PhpCsFixer) explainRule(rule string) string {
 	dp.ruleDescriptions.Store(rule, ruleDescription)
 
 	return ruleDescription
+}
+
+// CanFormat returns true if formatting is enabled for this provider
+func (dp *PhpCsFixer) CanFormat() bool {
+	return dp.config.Format.Enabled
+}
+
+func (dp *PhpCsFixer) Format(filePath string, content string) (string, error) {
+	if !dp.CanFormat() {
+		return content, fmt.Errorf("formatting is not enabled for %s", dp.Name())
+	}
+
+	// Build the php-cs-fixer command with --diff to get formatting changes
+	configArg := ""
+	if dp.config.ConfigFile != "" {
+		configArg = fmt.Sprintf("--config %s", dp.config.ConfigFile)
+	}
+
+	// Use stdin with --diff to get the formatting diff without modifying files
+	cmd := fmt.Sprintf("%s fix - --diff %s", dp.config.Path, configArg)
+
+	diffOutput, err := container.RunCommandInContainer(dp.config.Container, cmd, content)
+	if err != nil {
+		log.Printf("%s%s php-cs-fixer returned non-zero exit code: %v", logging.LogTagLSP, logging.LogTagServer, err)
+
+		// php-cs-fixer exit codes:
+		// 0 = OK, no changes needed
+		// 8 = Changes found (SUCCESS with --diff flag)
+		// 1 = General errors
+		// 2 = Configuration errors
+		// 16 = Configuration file has invalid format
+		// 32 = Configuration file has invalid content
+
+		// Check if this is exit code 8 (changes found) which is success for --diff
+		if strings.Contains(err.Error(), "exit status 8") {
+			log.Printf("%s%s php-cs-fixer found formatting changes (exit code 8 is success)", logging.LogTagLSP, logging.LogTagServer)
+			// Continue processing - this is actually success
+		} else {
+			log.Printf("%s%s php-cs-fixer failed with error: %v", logging.LogTagLSP, logging.LogTagServer, err)
+			log.Printf("%s%s php-cs-fixer output (might contain error info): %s", logging.LogTagLSP, logging.LogTagServer, string(diffOutput))
+			return content, fmt.Errorf("php-cs-fixer command failed (exit code indicates error): %w", err)
+		}
+	}
+
+	// If no diff output, content is already formatted
+	diffStr := strings.TrimSpace(string(diffOutput))
+	if diffStr == "" {
+		return content, nil
+	}
+
+	// Parse the diff and apply changes to get formatted content
+	formattedContent, err := utils.ApplyUnifiedDiff(content, diffStr)
+	if err != nil {
+		return content, fmt.Errorf("failed to apply diff: %w", err)
+	}
+
+	return formattedContent, nil
 }

@@ -5,6 +5,8 @@ A Language Server Protocol (LSP) implementation for PHP that provides dynamic di
 ## Features
 
 - **Docker Integration**: Run PHP CS Fixer and other tools inside Docker containers
+- **Diagnostics**: Real-time code analysis and issue detection
+- **Document Formatting**: Automatic code formatting using php-cs-fixer
 - **Configurable**: Use `.php-diagls.json` configuration files for project-specific settings
 
 ## Installation
@@ -26,13 +28,16 @@ Create a `.php-diagls.json` file in your project root directory to configure the
       "enabled": true,
       "container": "my-php-container",
       "path": "/usr/local/bin/php-cs-fixer",
-      "configFile": ".php-cs-fixer.dist.php"
+      "configFile": ".php-cs-fixer.dist.php",
+      "format": {
+        "enabled": true
+      }
     },
     "phpstan": {
       "enabled": false,
       "container": "my-php-container",
       "path": "/usr/local/bin/phpstan",
-      "configFile": "phpstan.neon" 
+      "configFile": "phpstan.neon"
     }
   }
 }
@@ -42,10 +47,49 @@ Create a `.php-diagls.json` file in your project root directory to configure the
 
 #### PHP CS Fixer (`phpcsfixer`)
 
-- **`enabled`**: Quick status toggle for the diagnostic provider 
+- **`enabled`**: Quick status toggle for the diagnostic provider
 - **`container`**: Name of the Docker container where the diagnostic provider tool is installed
 - **`path`**: Full path to the diagnostic provider executable inside the container
-- **`config`**: (Optional) Path to the diagnostic provider configuration file inside the container
+- **`configFile`**: (Optional) Path to the diagnostic provider configuration file inside the container
+- **`format.enabled`**: (Optional) Enable document formatting using this provider
+
+#### PHPStan (`phpstan`)
+
+- **`enabled`**: Quick status toggle for the diagnostic provider
+- **`container`**: Name of the Docker container where PHPStan is installed
+- **`path`**: Full path to the PHPStan executable inside the container
+- **`configFile`**: (Optional) Path to the PHPStan configuration file inside the container
+
+## Document Formatting
+
+The LSP server supports automatic document formatting using php-cs-fixer. When enabled, you can format PHP files using your editor's format command.
+
+### How It Works
+
+1. **Stdin Processing**: Content is sent to php-cs-fixer via stdin (no temporary files)
+2. **Diff Analysis**: php-cs-fixer returns a unified diff of proposed changes
+3. **Safe Application**: Changes are applied without modifying files on disk
+4. **Container Integration**: Formatting runs inside your specified Docker container
+
+### Enabling Formatting
+
+Add the `format` configuration to your php-cs-fixer provider:
+
+```json
+{
+  "diagnosticsProviders": {
+    "phpcsfixer": {
+      "enabled": true,
+      "container": "my-php-container",
+      "path": "/usr/local/bin/php-cs-fixer",
+      "configFile": ".php-cs-fixer.dist.php",
+      "format": {
+        "enabled": true
+      }
+    }
+  }
+}
+```
 
 ## Usage
 
@@ -68,3 +112,8 @@ Then in the LSP configuration:
 vim.lsp.enable({'php-diagls'})
 ```
 
+#### Formatting Commands
+
+Once configured, you can format documents using:
+
+- **Neovim**: `:lua vim.lsp.buf.format()`

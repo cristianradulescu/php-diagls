@@ -21,11 +21,16 @@ type Config struct {
 	initialized          bool
 }
 
+type FormatConfig struct {
+	Enabled bool `json:"enabled"`
+}
+
 type DiagnosticsProvider struct {
-	Enabled    bool   `json:"enabled"`
-	Container  string `json:"container"`
-	Path       string `json:"path"`
-	ConfigFile string `json:"configFile"`
+	Enabled    bool         `json:"enabled"`
+	Container  string       `json:"container"`
+	Path       string       `json:"path"`
+	ConfigFile string       `json:"configFile"`
+	Format     FormatConfig `json:"format"`
 }
 
 func (config *Config) IsInitialized() bool {
