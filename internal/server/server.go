@@ -10,6 +10,7 @@ import (
 
 	"github.com/cristianradulescu/php-diagls/internal/config"
 	"github.com/cristianradulescu/php-diagls/internal/diagnostics"
+	"github.com/cristianradulescu/php-diagls/internal/formatting"
 	"github.com/cristianradulescu/php-diagls/internal/logging"
 	"github.com/cristianradulescu/php-diagls/internal/utils"
 	"go.lsp.dev/jsonrpc2"
@@ -50,6 +51,8 @@ func (s *Server) Handle(ctx context.Context, reply jsonrpc2.Replier, req jsonrpc
 		return s.handleDidClose(ctx, reply, req)
 	case protocol.MethodTextDocumentDidSave:
 		return s.handleDidSave(ctx, reply, req)
+	case protocol.MethodTextDocumentFormatting:
+		return s.handleDocumentFormatting(ctx, reply, req)
 	case protocol.MethodWorkspaceDidChangeWatchedFiles:
 		return s.handleDidChangeWatchedFiles(ctx, reply, req)
 	case protocol.MethodShutdown:
@@ -276,4 +279,67 @@ func (s *Server) collectDiagnostics(ctx context.Context, filePath string) []prot
 	}
 
 	return diagnostics
+}
+
+func (s *Server) loadFormattingProviders() []formatting.FormattingProvider {
+	return formatting.LoadFormattingProviders(s.serverConfig.DiagnosticsProviders)
+}
+
+func (s *Server) handleDocumentFormatting(ctx context.Context, reply jsonrpc2.Replier, req jsonrpc2.Request) error {
+	var params protocol.DocumentFormattingParams
+	if err := json.Unmarshal(req.Params(), &params); err != nil {
+		log.Printf("%s%s Error unmarshaling document formatting params: %v", logging.LogTagLSP, logging.LogTagServer, err)
+		return err
+	}
+
+	filePath := params.TextDocument.URI.Filename()
+	log.Printf("%s%s Formatting document: %s", logging.LogTagLSP, logging.LogTagServer, filePath)
+
+	// Read current file content
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		log.Printf("%s%s Error reading file for formatting: %v", logging.LogTagLSP, logging.LogTagServer, err)
+		return reply(ctx, nil, fmt.Errorf("failed to read file: %w", err))
+	}
+
+	formattingProviders := s.loadFormattingProviders()
+	if len(formattingProviders) == 0 {
+		log.Printf("%s%s No formatting providers available", logging.LogTagLSP, logging.LogTagServer)
+		return reply(ctx, []protocol.TextEdit{}, nil)
+	}
+
+	// Apply formatting using the first available provider
+	// In the future, this could be configurable or try multiple providers
+	provider := formattingProviders[0]
+	formattedContent, err := provider.Format(filePath, string(content))
+	if err != nil {
+		s.showWindowMessage(ctx, protocol.MessageTypeError, fmt.Sprintf("Error formatting with %s: %v", provider.Name(), err))
+		return reply(ctx, []protocol.TextEdit{}, nil)
+	}
+
+	// If content hasn't changed, return empty edits
+	if formattedContent == string(content) {
+		return reply(ctx, []protocol.TextEdit{}, nil)
+	}
+
+	// Calculate the range for the entire document
+	lines := strings.Split(string(content), "\n")
+	endLine := uint32(len(lines) - 1)
+	endCharacter := uint32(0)
+	if len(lines) > 0 {
+		endCharacter = uint32(len(lines[len(lines)-1]))
+	}
+
+	// Return a single text edit that replaces the entire document
+	textEdits := []protocol.TextEdit{
+		{
+			Range: protocol.Range{
+				Start: protocol.Position{Line: 0, Character: 0},
+				End:   protocol.Position{Line: endLine, Character: endCharacter},
+			},
+			NewText: formattedContent,
+		},
+	}
+
+	return reply(ctx, textEdits, nil)
 }

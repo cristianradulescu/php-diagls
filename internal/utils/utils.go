@@ -3,6 +3,8 @@ package utils
 import (
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -56,4 +58,84 @@ func SnakeCaseToHumanReadable(stringToConvert string) string {
 
 	return strings.Join(parts, " ")
 
+}
+
+// CopyFile copies a file from src to dst
+func CopyFile(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, 0644)
+}
+
+// ApplyUnifiedDiff applies a unified diff to the original content to produce the modified content
+func ApplyUnifiedDiff(originalContent, diff string) (string, error) {
+	lines := strings.Split(originalContent, "\n")
+	diffLines := strings.Split(diff, "\n")
+
+	result := make([]string, 0, len(lines))
+	originalLineNum := 0
+
+	re := regexp.MustCompile(`@@\s+-(\d+),(\d+)?\s+\+(\d+),(\d+)?\s+@@`)
+
+	i := 0
+	for i < len(diffLines) {
+		line := diffLines[i]
+
+		// Skip diff header lines
+		if strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++") {
+			i++
+			continue
+		}
+
+		// Handle hunk header
+		if strings.HasPrefix(line, "@@") {
+			matches := re.FindStringSubmatch(line)
+			if len(matches) >= 2 {
+				if startLine, err := strconv.Atoi(matches[1]); err == nil {
+					// Copy lines before this hunk
+					for originalLineNum < startLine-1 && originalLineNum < len(lines) {
+						result = append(result, lines[originalLineNum])
+						originalLineNum++
+					}
+				}
+			}
+			i++
+			continue
+		}
+
+		// Handle diff content
+		if len(line) == 0 {
+			i++
+			continue
+		}
+
+		switch line[0] {
+		case ' ':
+			// Context line - copy from original
+			if originalLineNum < len(lines) {
+				result = append(result, lines[originalLineNum])
+				originalLineNum++
+			}
+		case '-':
+			// Removed line - skip it in original
+			if originalLineNum < len(lines) {
+				originalLineNum++
+			}
+		case '+':
+			// Added line - add to result
+			result = append(result, line[1:])
+		}
+
+		i++
+	}
+
+	// Copy any remaining lines from original
+	for originalLineNum < len(lines) {
+		result = append(result, lines[originalLineNum])
+		originalLineNum++
+	}
+
+	return strings.Join(result, "\n"), nil
 }
