@@ -183,10 +183,12 @@ func (dp *PhpCsFixer) explainRule(rule string) string {
 	fullRuleDescription := strings.TrimSpace(string(fullRuleDescriptionOutput))
 
 	// Keep only the actual description without example and config info
-	re1 := regexp.MustCompile(`Description of the .* rule.`)
+	re1 := regexp.MustCompile(`Description of .* rule.`)
 	ruleDescription := re1.ReplaceAllString(fullRuleDescription, "")
 	re2 := regexp.MustCompile(`(?s)(Fixer is configurable|Fixer applying).*`)
 	ruleDescription = re2.ReplaceAllString(ruleDescription, "")
+	re3 := regexp.MustCompile(`(?s)Fixing examples:.*`)
+	ruleDescription = re3.ReplaceAllString(ruleDescription, "")
 
 	dp.ruleDescriptions.Store(rule, ruleDescription)
 
