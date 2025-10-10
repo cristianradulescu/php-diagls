@@ -9,7 +9,7 @@ import (
 
 const (
 	Name           string = "php-diagls"
-	Version        string = "0.0.2"
+	Version        string = "0.1.0"
 	ConfigFileName string = ".php-diagls.json"
 
 	ConfigItemDiagnosticsProviders string = "diagnosticsProviders"
