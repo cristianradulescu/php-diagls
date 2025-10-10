@@ -38,6 +38,11 @@ Create a `.php-diagls.json` file in your project root directory to configure the
       "container": "my-php-container",
       "path": "/usr/local/bin/phpstan",
       "configFile": "phpstan.neon"
+    },
+    "phplint": {
+      "enabled": true,
+      "container": "my-php-container",
+      "path": "/usr/local/bin/php"
     }
   }
 }
@@ -45,20 +50,13 @@ Create a `.php-diagls.json` file in your project root directory to configure the
 
 ### Configuration Options
 
-#### PHP CS Fixer (`phpcsfixer`)
-
 - **`enabled`**: Quick status toggle for the diagnostic provider
 - **`container`**: Name of the Docker container where the diagnostic provider tool is installed
 - **`path`**: Full path to the diagnostic provider executable inside the container
 - **`configFile`**: (Optional) Path to the diagnostic provider configuration file inside the container
 - **`format.enabled`**: (Optional) Enable document formatting using this provider
+- **`format.timeoutSeconds`**: (Optional) Nb of seconds to allow the formatting process to run 
 
-#### PHPStan (`phpstan`)
-
-- **`enabled`**: Quick status toggle for the diagnostic provider
-- **`container`**: Name of the Docker container where PHPStan is installed
-- **`path`**: Full path to the PHPStan executable inside the container
-- **`configFile`**: (Optional) Path to the PHPStan configuration file inside the container
 
 ## Document Formatting
 
