@@ -22,7 +22,8 @@ type Config struct {
 }
 
 type FormatConfig struct {
-	Enabled bool `json:"enabled"`
+	Enabled        bool `json:"enabled"`
+	TimeoutSeconds int  `json:"timeoutSeconds,omitempty"`
 }
 
 type DiagnosticsProvider struct {

@@ -59,6 +59,8 @@ func (s *Server) Handle(ctx context.Context, reply jsonrpc2.Replier, req jsonrpc
 		return s.handleShutdown(ctx, reply, req)
 	case protocol.MethodExit:
 		return s.handleExit(ctx, reply, req)
+	case protocol.MethodCancelRequest:
+		return s.handleCancelRequest(ctx, reply, req)
 	default:
 		log.Printf("%s%s Unhandled method: %s", logging.LogTagLSP, logging.LogTagServer, req.Method())
 		return reply(ctx, nil, nil)
@@ -218,6 +220,21 @@ func (s *Server) handleExit(_ context.Context, _ jsonrpc2.Replier, _ jsonrpc2.Re
 	return s.conn.Close()
 }
 
+func (s *Server) handleCancelRequest(ctx context.Context, reply jsonrpc2.Replier, req jsonrpc2.Request) error {
+	var params struct {
+		ID interface{} `json:"id"`
+	}
+	if err := json.Unmarshal(req.Params(), &params); err != nil {
+		log.Printf("%s%s Error unmarshaling cancel request params: %v", logging.LogTagLSP, logging.LogTagServer, err)
+		return err
+	}
+
+	log.Printf("%s%s Client requested cancellation for request ID: %v", logging.LogTagLSP, logging.LogTagServer, params.ID)
+	// Note: The actual cancellation is handled by the jsonrpc2 library's context cancellation mechanism
+	// This handler acknowledges the cancel request - the running operation should detect ctx.Done()
+	return reply(ctx, nil, nil)
+}
+
 func (s *Server) showWindowMessage(ctx context.Context, messageType protocol.MessageType, message string) {
 	params := &protocol.ShowMessageParams{Type: messageType, Message: message}
 	if err := s.conn.Notify(ctx, protocol.MethodWindowShowMessage, params); err != nil {
@@ -295,6 +312,11 @@ func (s *Server) handleDocumentFormatting(ctx context.Context, reply jsonrpc2.Re
 	filePath := params.TextDocument.URI.Filename()
 	log.Printf("%s%s Formatting document: %s", logging.LogTagLSP, logging.LogTagServer, filePath)
 
+	// Check if context already has a deadline
+	if deadline, ok := ctx.Deadline(); ok {
+		log.Printf("%s%s Format request has deadline: %v", logging.LogTagLSP, logging.LogTagServer, deadline)
+	}
+
 	// Read current file content
 	content, err := os.ReadFile(filePath)
 	if err != nil {
@@ -311,11 +333,22 @@ func (s *Server) handleDocumentFormatting(ctx context.Context, reply jsonrpc2.Re
 	// Apply formatting using the first available provider
 	// In the future, this could be configurable or try multiple providers
 	provider := formattingProviders[0]
-	formattedContent, err := provider.Format(filePath, string(content))
+	log.Printf("%s%s Starting formatting with %s", logging.LogTagLSP, logging.LogTagServer, provider.Name())
+
+	formattedContent, err := provider.Format(ctx, filePath, string(content))
 	if err != nil {
-		s.showWindowMessage(ctx, protocol.MessageTypeError, fmt.Sprintf("Error formatting with %s: %v", provider.Name(), err))
+		// Check if error is due to cancellation
+		if ctx.Err() != nil {
+			log.Printf("%s%s Formatting cancelled by client: %v", logging.LogTagLSP, logging.LogTagServer, ctx.Err())
+			s.showWindowMessage(ctx, protocol.MessageTypeWarning, "Formatting operation was cancelled")
+		} else {
+			log.Printf("%s%s Formatting failed with %s: %v", logging.LogTagLSP, logging.LogTagServer, provider.Name(), err)
+			s.showWindowMessage(ctx, protocol.MessageTypeError, fmt.Sprintf("Error formatting with %s: %v", provider.Name(), err))
+		}
 		return reply(ctx, []protocol.TextEdit{}, nil)
 	}
+
+	log.Printf("%s%s Formatting completed successfully with %s", logging.LogTagLSP, logging.LogTagServer, provider.Name())
 
 	// If content hasn't changed, return empty edits
 	if formattedContent == string(content) {

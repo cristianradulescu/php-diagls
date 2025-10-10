@@ -1,6 +1,7 @@
 package diagnostics
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -52,6 +53,7 @@ func (dp *PhpStan) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 		configArg = fmt.Sprintf("--configuration=%s", dp.config.ConfigFile)
 	}
 	fullAnalysisCmdOutput, _ := container.RunCommandInContainer(
+		context.Background(),
 		dp.config.Container,
 		fmt.Sprintf("%s analyze %s --memory-limit=-1 --no-progress --error-format=json %s 2>/dev/null", dp.config.Path, relativeFilePath, configArg),
 	)

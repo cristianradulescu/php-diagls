@@ -72,6 +72,13 @@
           "type": "boolean",
           "description": "Enable document formatting using this provider",
           "default": false
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "description": "Timeout in seconds for formatting operations (default: 30)",
+          "minimum": 1,
+          "maximum": 300,
+          "default": 30
         }
       },
       "required": ["enabled"],
