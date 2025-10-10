@@ -1,0 +1,20 @@
+{
+  "$schema": "./schema/php-diagls.schema.json",
+  "diagnosticsProviders": {
+    "phpcsfixer": {
+      "enabled": true,
+      "container": "my-php-container",
+      "path": "/usr/local/bin/php-cs-fixer",
+      "configFile": ".php-cs-fixer.dist.php",
+      "format": {
+        "enabled": true
+      }
+    },
+    "phpstan": {
+      "enabled": false,
+      "container": "my-php-container",
+      "path": "/usr/local/bin/phpstan",
+      "configFile": "phpstan.neon"
+    }
+  }
+}

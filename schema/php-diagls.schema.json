@@ -1,0 +1,200 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/cristianradulescu/php-diagls/schema/php-diagls.schema.json",
+  "title": "PHP Diagnostics LSP Server Configuration",
+  "description": "Configuration schema for php-diagls LSP server",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema reference"
+    },
+    "diagnosticsProviders": {
+      "type": "object",
+      "description": "Configuration for diagnostic providers",
+      "properties": {
+        "phpcsfixer": {
+          "$ref": "#/$defs/phpCsFixerProvider"
+        },
+        "phpstan": {
+          "$ref": "#/$defs/phpStanProvider"
+        }
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/diagnosticsProvider"
+      },
+      "minProperties": 1
+    }
+  },
+  "required": ["diagnosticsProviders"],
+  "additionalProperties": false,
+  "$defs": {
+    "diagnosticsProvider": {
+      "type": "object",
+      "description": "Base diagnostic provider configuration",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable or disable this diagnostic provider",
+          "default": true
+        },
+        "container": {
+          "type": "string",
+          "description": "Name of the Docker container where the diagnostic tool is installed",
+          "minLength": 1,
+          "examples": ["my-php-container", "php-dev", "app-container"]
+        },
+        "path": {
+          "type": "string",
+          "description": "Full path to the diagnostic tool executable inside the container",
+          "minLength": 1,
+          "pattern": "^/.*",
+          "examples": ["/usr/local/bin/php-cs-fixer", "/usr/bin/phpstan"]
+        },
+        "configFile": {
+          "type": "string",
+          "description": "Path to the diagnostic tool configuration file inside the container (relative to project root)",
+          "examples": [
+            ".php-cs-fixer.dist.php",
+            "phpstan.neon",
+            "phpstan.dist.neon"
+          ]
+        }
+      },
+      "required": ["enabled", "container", "path"],
+      "additionalProperties": false
+    },
+    "formatConfig": {
+      "type": "object",
+      "description": "Formatting configuration",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable document formatting using this provider",
+          "default": false
+        }
+      },
+      "required": ["enabled"],
+      "additionalProperties": false
+    },
+    "phpCsFixerProvider": {
+      "type": "object",
+      "description": "PHP CS Fixer diagnostic and formatting provider configuration",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable or disable PHP CS Fixer",
+          "default": true
+        },
+        "container": {
+          "type": "string",
+          "description": "Name of the Docker container where PHP CS Fixer is installed",
+          "minLength": 1,
+          "examples": ["my-php-container", "php-dev", "app-container"]
+        },
+        "path": {
+          "type": "string",
+          "description": "Full path to php-cs-fixer executable inside the container",
+          "minLength": 1,
+          "pattern": "^/.*",
+          "default": "/usr/local/bin/php-cs-fixer",
+          "examples": [
+            "/usr/local/bin/php-cs-fixer",
+            "/usr/bin/php-cs-fixer",
+            "/app/vendor/bin/php-cs-fixer"
+          ]
+        },
+        "configFile": {
+          "type": "string",
+          "description": "Path to PHP CS Fixer configuration file (relative to project root)",
+          "examples": [
+            ".php-cs-fixer.dist.php",
+            ".php-cs-fixer.php",
+            "tools/php-cs-fixer.php"
+          ]
+        },
+        "format": {
+          "$ref": "#/$defs/formatConfig",
+          "description": "Document formatting configuration for PHP CS Fixer"
+        }
+      },
+      "required": ["enabled", "container", "path"],
+      "additionalProperties": false
+    },
+    "phpStanProvider": {
+      "type": "object",
+      "description": "PHPStan static analysis provider configuration",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable or disable PHPStan",
+          "default": false
+        },
+        "container": {
+          "type": "string",
+          "description": "Name of the Docker container where PHPStan is installed",
+          "minLength": 1,
+          "examples": ["my-php-container", "php-dev", "app-container"]
+        },
+        "path": {
+          "type": "string",
+          "description": "Full path to phpstan executable inside the container",
+          "minLength": 1,
+          "pattern": "^/.*",
+          "default": "/usr/local/bin/phpstan",
+          "examples": [
+            "/usr/local/bin/phpstan",
+            "/usr/bin/phpstan",
+            "/app/vendor/bin/phpstan"
+          ]
+        },
+        "configFile": {
+          "type": "string",
+          "description": "Path to PHPStan configuration file (relative to project root)",
+          "examples": [
+            "phpstan.neon",
+            "phpstan.dist.neon",
+            "phpstan.neon.dist",
+            "tools/phpstan.neon"
+          ]
+        }
+      },
+      "required": ["enabled", "container", "path"],
+      "additionalProperties": false
+    }
+  },
+  "examples": [
+    {
+      "diagnosticsProviders": {
+        "phpcsfixer": {
+          "enabled": true,
+          "container": "my-php-container",
+          "path": "/usr/local/bin/php-cs-fixer",
+          "configFile": ".php-cs-fixer.dist.php",
+          "format": {
+            "enabled": true
+          }
+        },
+        "phpstan": {
+          "enabled": false,
+          "container": "my-php-container",
+          "path": "/usr/local/bin/phpstan",
+          "configFile": "phpstan.neon"
+        }
+      }
+    },
+    {
+      "diagnosticsProviders": {
+        "phpcsfixer": {
+          "enabled": true,
+          "container": "php-dev",
+          "path": "/app/vendor/bin/php-cs-fixer",
+          "configFile": ".php-cs-fixer.php",
+          "format": {
+            "enabled": true
+          }
+        }
+      }
+    }
+  ]
+}
