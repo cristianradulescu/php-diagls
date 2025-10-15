@@ -16,6 +16,11 @@
       "container": "my-php-container",
       "path": "/usr/local/bin/phpstan",
       "configFile": "phpstan.neon"
+    },
+    "phplint": {
+      "enabled": true,
+      "container": "my-php-container",
+      "path": "/usr/local/bin/php"
     }
   }
 }
