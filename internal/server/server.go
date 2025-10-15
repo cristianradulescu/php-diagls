@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/cristianradulescu/php-diagls/internal/config"
 	"github.com/cristianradulescu/php-diagls/internal/diagnostics"
@@ -81,7 +82,18 @@ func (s *Server) handleInitialize(ctx context.Context, reply jsonrpc2.Replier, r
 
 	// Load configuration. Show warning if not found and exit
 	if !s.serverConfig.IsInitialized() {
-		serverConfig, err := s.serverConfig.LoadConfig(params.WorkspaceFolders[0].Name)
+		// Determine project root from workspace folder URI or RootURI
+		projectRoot := ""
+		if len(params.WorkspaceFolders) > 0 && params.WorkspaceFolders[0].URI != "" {
+			projectRoot = utils.URIToPath(protocol.DocumentURI(params.WorkspaceFolders[0].URI))
+		} else if params.RootURI != "" {
+			projectRoot = utils.URIToPath(protocol.DocumentURI(params.RootURI))
+		} else {
+			if cwd, cwdErr := os.Getwd(); cwdErr == nil {
+				projectRoot = cwd
+			}
+		}
+		serverConfig, err := s.serverConfig.LoadConfig(projectRoot)
 		if err != nil {
 			log.Printf("%s%s No config: %v", logging.LogTagLSP, logging.LogTagServer, err)
 
@@ -285,15 +297,32 @@ func (s *Server) collectDiagnostics(ctx context.Context, filePath string) []prot
 		}
 	}
 
-	for _, provider := range s.loadDiagnosticsProviders() {
-		providerDiagnostics, err := provider.Analyze(filePath)
-		if err != nil {
-			s.showWindowMessage(ctx, protocol.MessageTypeError, fmt.Sprintf("Error running diagnostics provider '%s': %v", provider, err))
-			continue
-		}
-
-		diagnostics = append(diagnostics, providerDiagnostics...)
+	providers := s.loadDiagnosticsProviders()
+	if len(providers) == 0 {
+		return diagnostics
 	}
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	wg.Add(len(providers))
+	for _, provider := range providers {
+		p := provider
+		go func() {
+			defer wg.Done()
+
+			providerDiagnostics, err := p.Analyze(filePath)
+			if err != nil {
+				s.showWindowMessage(ctx, protocol.MessageTypeError, fmt.Sprintf("Diagnostics provider %s failed: %v", p.Name(), err))
+				return
+			}
+
+			mu.Lock()
+			diagnostics = append(diagnostics, providerDiagnostics...)
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
 
 	return diagnostics
 }
