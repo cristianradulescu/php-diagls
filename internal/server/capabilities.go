@@ -8,8 +8,8 @@ import (
 )
 
 const (
-	LspCommandPrefix = config.Name
-	LspCommandSeparator = "/"
+	LspCommandPrefix         = config.Name
+	LspCommandSeparator      = "/"
 	LspCommandNameShowConfig = "showConfig"
 )
 
@@ -26,6 +26,11 @@ func serverCapabilities() protocol.ServerCapabilities {
 			},
 		},
 		DocumentFormattingProvider: true,
+		CodeActionProvider: &protocol.CodeActionOptions{
+			CodeActionKinds: []protocol.CodeActionKind{
+				protocol.QuickFix,
+			},
+		},
 	}
 }
 
