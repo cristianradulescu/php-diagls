@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cristianradulescu/php-diagls/internal/config"
 	"github.com/cristianradulescu/php-diagls/internal/container"
@@ -19,10 +20,28 @@ import (
 	"go.lsp.dev/protocol"
 )
 
+const debounceInterval = 5 * time.Second
+
 // Server represents the Language Server Protocol (LSP) server
 type Server struct {
 	conn         jsonrpc2.Conn
 	serverConfig *config.Config
+
+	diagnosticsProviders []diagnostics.DiagnosticsProvider
+	formattingProviders  []formatting.FormattingProvider
+
+	// Debounce for diagnostics (per-file)
+	// WARNING: Per-file debouncing for diagnostics means only the last diagnostics request
+	// per file within debounceInterval will be processed. Requests for other files are unaffected.
+	diagMu     sync.Mutex
+	diagTimers map[protocol.DocumentURI]*time.Timer
+	diagGen    map[protocol.DocumentURI]uint64
+
+	// Debounce for formatting (per-file)
+	// WARNING: Per-file debouncing for formatting means only the last formatting request
+	// per file within debounceInterval will be executed for that file.
+	fmtMu     sync.Mutex
+	fmtTimers map[protocol.DocumentURI]*time.Timer
 }
 
 // New creates a new LSP server instance
@@ -30,6 +49,9 @@ func New(conn jsonrpc2.Conn) *Server {
 	s := &Server{
 		conn:         conn,
 		serverConfig: &config.Config{},
+		diagTimers:   make(map[protocol.DocumentURI]*time.Timer),
+		diagGen:      make(map[protocol.DocumentURI]uint64),
+		fmtTimers:    make(map[protocol.DocumentURI]*time.Timer),
 	}
 
 	return s
@@ -105,6 +127,10 @@ func (s *Server) handleInitialize(ctx context.Context, reply jsonrpc2.Replier, r
 			os.Exit(0)
 		}
 		s.serverConfig = serverConfig
+
+		// Preload diagnostics and formatting providers once
+		_ = s.loadDiagnosticsProviders()
+		_ = s.loadFormattingProviders()
 	}
 
 	resp := protocol.InitializeResult{
@@ -153,8 +179,7 @@ func (s *Server) handleDidOpen(ctx context.Context, _ jsonrpc2.Replier, req json
 		return err
 	}
 
-	diagnostics := s.collectDiagnostics(ctx, params.TextDocument.URI.Filename())
-	s.publishDiagnostics(ctx, params.TextDocument.URI, diagnostics)
+	s.scheduleDiagnostics(params.TextDocument.URI)
 
 	return nil
 }
@@ -167,8 +192,7 @@ func (s *Server) handleDidChange(ctx context.Context, _ jsonrpc2.Replier, req js
 		return err
 	}
 
-	diagnostics := s.collectDiagnostics(ctx, params.TextDocument.URI.Filename())
-	s.publishDiagnostics(ctx, params.TextDocument.URI, diagnostics)
+	s.scheduleDiagnostics(params.TextDocument.URI)
 
 	return nil
 }
@@ -181,8 +205,7 @@ func (s *Server) handleDidSave(ctx context.Context, _ jsonrpc2.Replier, req json
 		return err
 	}
 
-	diagnostics := s.collectDiagnostics(ctx, params.TextDocument.URI.Filename())
-	s.publishDiagnostics(ctx, params.TextDocument.URI, diagnostics)
+	s.scheduleDiagnosticsPriority(params.TextDocument.URI)
 
 	return nil
 }
@@ -199,8 +222,7 @@ func (s *Server) handleDidChangeWatchedFiles(ctx context.Context, _ jsonrpc2.Rep
 		if strings.HasSuffix(string(change.URI), ".php") {
 			switch change.Type {
 			case protocol.FileChangeTypeChanged, protocol.FileChangeTypeCreated:
-				diagnostics := s.collectDiagnostics(ctx, change.URI.Filename())
-				s.publishDiagnostics(ctx, change.URI, diagnostics)
+				s.scheduleDiagnostics(change.URI)
 			case protocol.FileChangeTypeDeleted:
 				s.publishDiagnostics(ctx, change.URI, []protocol.Diagnostic{})
 			}
@@ -218,8 +240,7 @@ func (s *Server) handleDidClose(ctx context.Context, _ jsonrpc2.Replier, req jso
 		return err
 	}
 
-	diagnostics := s.collectDiagnostics(ctx, params.TextDocument.URI.Filename())
-	s.publishDiagnostics(ctx, params.TextDocument.URI, diagnostics)
+	s.scheduleDiagnostics(params.TextDocument.URI)
 
 	return nil
 }
@@ -269,9 +290,218 @@ func (s *Server) publishDiagnostics(ctx context.Context, uri protocol.DocumentUR
 	}
 }
 
-func (s *Server) loadDiagnosticsProviders() []diagnostics.DiagnosticsProvider {
-	providers := []diagnostics.DiagnosticsProvider{}
+func (s *Server) scheduleDiagnostics(uri protocol.DocumentURI) {
+	// WARNING: Per-file first-wins gating for diagnostics.
+	// Only the first diagnostics request per file within debounceInterval will be processed.
+	// Subsequent requests received before completion or expiry of the interval are discarded.
+	s.diagMu.Lock()
+	if _, exists := s.diagTimers[uri]; exists {
+		// A diagnostics run is already in-flight or within the gating window; discard this request.
+		s.diagMu.Unlock()
+		return
+	}
+	// Bump generation for this URI and capture it to guard publication ordering
+	if s.diagGen == nil {
+		s.diagGen = make(map[protocol.DocumentURI]uint64)
+	}
+	s.diagGen[uri]++
+	gen := s.diagGen[uri]
 
+	// Create a gating timer to auto-clear after debounceInterval in case the run takes too long.
+	s.diagTimers[uri] = time.AfterFunc(debounceInterval, func() {
+		s.diagMu.Lock()
+		delete(s.diagTimers, uri)
+		s.diagMu.Unlock()
+	})
+	s.diagMu.Unlock()
+
+	// Process immediately
+	go func(u protocol.DocumentURI, g uint64) {
+		filePath := u.Filename()
+		diags := s.collectDiagnostics(context.Background(), filePath)
+
+		// Check generation before publishing to avoid stale diagnostics overriding newer ones
+		s.diagMu.Lock()
+		currentGen := s.diagGen[u]
+		s.diagMu.Unlock()
+		if g != currentGen {
+			// Stale result, drop it
+			return
+		}
+
+		s.publishDiagnostics(context.Background(), u, diags)
+
+		// Clear the gate upon completion (even if before the interval)
+		s.diagMu.Lock()
+		if t, ok := s.diagTimers[u]; ok {
+			t.Stop()
+			delete(s.diagTimers, u)
+		}
+		s.diagMu.Unlock()
+	}(uri, gen)
+}
+
+// scheduleDiagnosticsPriority runs diagnostics with priority for the given URI.
+// It cancels any gating window and ensures this run's results take precedence.
+func (s *Server) scheduleDiagnosticsPriority(uri protocol.DocumentURI) {
+	// WARNING: didSave priority - this will preempt existing diagnostics gates for the same file.
+	s.diagMu.Lock()
+	// Stop and clear any existing gate for this URI
+	if t, ok := s.diagTimers[uri]; ok {
+		t.Stop()
+		delete(s.diagTimers, uri)
+	}
+	// Bump generation and capture it so this run's results supersede earlier ones
+	if s.diagGen == nil {
+		s.diagGen = make(map[protocol.DocumentURI]uint64)
+	}
+	s.diagGen[uri]++
+	gen := s.diagGen[uri]
+
+	// Set a short-lived gate to prevent immediate duplicate triggers; it will be cleared on completion
+	s.diagTimers[uri] = time.AfterFunc(debounceInterval, func() {
+		s.diagMu.Lock()
+		delete(s.diagTimers, uri)
+		s.diagMu.Unlock()
+	})
+	s.diagMu.Unlock()
+
+	// Process immediately with priority
+	go func(u protocol.DocumentURI, g uint64) {
+		filePath := u.Filename()
+		diags := s.collectDiagnostics(context.Background(), filePath)
+
+		// Ensure we still hold the latest generation before publishing
+		s.diagMu.Lock()
+		currentGen := s.diagGen[u]
+		s.diagMu.Unlock()
+		if g != currentGen {
+			return
+		}
+
+		s.publishDiagnostics(context.Background(), u, diags)
+
+		// Clear gate for this URI
+		s.diagMu.Lock()
+		if t, ok := s.diagTimers[u]; ok {
+			t.Stop()
+			delete(s.diagTimers, u)
+		}
+		s.diagMu.Unlock()
+	}(uri, gen)
+}
+
+func (s *Server) scheduleFormatting(ctx context.Context, reply jsonrpc2.Replier, params protocol.DocumentFormattingParams) {
+	uri := params.TextDocument.URI
+
+	// WARNING: Per-file first-wins gating for formatting.
+	// Only the first formatting request per file within debounceInterval will be executed.
+	// Subsequent requests received before completion or expiry of the interval are discarded (empty edits).
+	s.fmtMu.Lock()
+	if _, exists := s.fmtTimers[uri]; exists {
+		s.fmtMu.Unlock()
+		// Discard this request quickly so client doesn't wait
+		_ = reply(ctx, []protocol.TextEdit{}, nil)
+		return
+	}
+	// Create a gating timer to auto-clear after debounceInterval in case the run takes too long.
+	s.fmtTimers[uri] = time.AfterFunc(debounceInterval, func() {
+		s.fmtMu.Lock()
+		delete(s.fmtTimers, uri)
+		s.fmtMu.Unlock()
+	})
+	s.fmtMu.Unlock()
+
+	filePath := uri.Filename()
+
+	// Read current file content
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		_ = reply(ctx, nil, fmt.Errorf("failed to read file: %w", err))
+		s.fmtMu.Lock()
+		if t, ok := s.fmtTimers[uri]; ok {
+			t.Stop()
+			delete(s.fmtTimers, uri)
+		}
+		s.fmtMu.Unlock()
+		return
+	}
+
+	formattingProviders := s.loadFormattingProviders()
+	if len(formattingProviders) == 0 {
+		_ = reply(ctx, []protocol.TextEdit{}, nil)
+		s.fmtMu.Lock()
+		if t, ok := s.fmtTimers[uri]; ok {
+			t.Stop()
+			delete(s.fmtTimers, uri)
+		}
+		s.fmtMu.Unlock()
+		return
+	}
+
+	// Apply formatting using the first available provider
+	provider := formattingProviders[0]
+	formattedContent, err := provider.Format(ctx, filePath, string(content))
+	if err != nil {
+		_ = reply(ctx, []protocol.TextEdit{}, nil)
+		s.fmtMu.Lock()
+		if t, ok := s.fmtTimers[uri]; ok {
+			t.Stop()
+			delete(s.fmtTimers, uri)
+		}
+		s.fmtMu.Unlock()
+		return
+	}
+
+	// If content hasn't changed, return empty edits
+	if formattedContent == string(content) {
+		_ = reply(ctx, []protocol.TextEdit{}, nil)
+		s.fmtMu.Lock()
+		if t, ok := s.fmtTimers[uri]; ok {
+			t.Stop()
+			delete(s.fmtTimers, uri)
+		}
+		s.fmtMu.Unlock()
+		return
+	}
+
+	// Calculate the range for the entire document
+	lines := strings.Split(string(content), "\n")
+	endLine := uint32(len(lines) - 1)
+	endCharacter := uint32(0)
+	if len(lines) > 0 {
+		endCharacter = uint32(len(lines[len(lines)-1]))
+	}
+
+	// Return a single text edit that replaces the entire document
+	textEdits := []protocol.TextEdit{
+		{
+			Range: protocol.Range{
+				Start: protocol.Position{Line: 0, Character: 0},
+				End:   protocol.Position{Line: endLine, Character: endCharacter},
+			},
+			NewText: formattedContent,
+		},
+	}
+
+	_ = reply(ctx, textEdits, nil)
+
+	// Clear the gate upon completion (even if before the interval)
+	s.fmtMu.Lock()
+	if t, ok := s.fmtTimers[uri]; ok {
+		t.Stop()
+		delete(s.fmtTimers, uri)
+	}
+	s.fmtMu.Unlock()
+}
+
+func (s *Server) loadDiagnosticsProviders() []diagnostics.DiagnosticsProvider {
+	// Return cached providers if already initialized
+	if s.diagnosticsProviders != nil {
+		return s.diagnosticsProviders
+	}
+
+	providers := []diagnostics.DiagnosticsProvider{}
 	for id, providerConfig := range s.serverConfig.DiagnosticsProviders {
 		// Initialize only enabled diagnostics providers
 		if !providerConfig.Enabled {
@@ -281,14 +511,15 @@ func (s *Server) loadDiagnosticsProviders() []diagnostics.DiagnosticsProvider {
 		provider, err := diagnostics.NewDiagnosticsProvider(id, providerConfig)
 		if err != nil {
 			s.showWindowMessage(context.Background(), protocol.MessageTypeError, fmt.Sprintf("%v", err))
-
 			continue
 		}
 
 		providers = append(providers, provider)
 	}
 
-	return providers
+	// Cache and return
+	s.diagnosticsProviders = providers
+	return s.diagnosticsProviders
 }
 
 func (s *Server) collectDiagnostics(ctx context.Context, filePath string) []protocol.Diagnostic {
@@ -332,7 +563,14 @@ func (s *Server) collectDiagnostics(ctx context.Context, filePath string) []prot
 }
 
 func (s *Server) loadFormattingProviders() []formatting.FormattingProvider {
-	return formatting.LoadFormattingProviders(s.serverConfig.DiagnosticsProviders)
+	// Return cached providers if already initialized
+	if s.formattingProviders != nil {
+		return s.formattingProviders
+	}
+
+	// Initialize and cache
+	s.formattingProviders = formatting.LoadFormattingProviders(s.serverConfig.DiagnosticsProviders)
+	return s.formattingProviders
 }
 
 func (s *Server) handleCodeAction(ctx context.Context, reply jsonrpc2.Replier, req jsonrpc2.Request) error {
@@ -425,70 +663,6 @@ func (s *Server) handleDocumentFormatting(ctx context.Context, reply jsonrpc2.Re
 		return err
 	}
 
-	filePath := params.TextDocument.URI.Filename()
-	log.Printf("%s%s Formatting document: %s", logging.LogTagLSP, logging.LogTagServer, filePath)
-
-	// Check if context already has a deadline
-	if deadline, ok := ctx.Deadline(); ok {
-		log.Printf("%s%s Format request has deadline: %v", logging.LogTagLSP, logging.LogTagServer, deadline)
-	}
-
-	// Read current file content
-	content, err := os.ReadFile(filePath)
-	if err != nil {
-		log.Printf("%s%s Error reading file for formatting: %v", logging.LogTagLSP, logging.LogTagServer, err)
-		return reply(ctx, nil, fmt.Errorf("failed to read file: %w", err))
-	}
-
-	formattingProviders := s.loadFormattingProviders()
-	if len(formattingProviders) == 0 {
-		log.Printf("%s%s No formatting providers available", logging.LogTagLSP, logging.LogTagServer)
-		return reply(ctx, []protocol.TextEdit{}, nil)
-	}
-
-	// Apply formatting using the first available provider
-	// In the future, this could be configurable or try multiple providers
-	provider := formattingProviders[0]
-	log.Printf("%s%s Starting formatting with %s", logging.LogTagLSP, logging.LogTagServer, provider.Name())
-
-	formattedContent, err := provider.Format(ctx, filePath, string(content))
-	if err != nil {
-		// Check if error is due to cancellation
-		if ctx.Err() != nil {
-			log.Printf("%s%s Formatting cancelled by client: %v", logging.LogTagLSP, logging.LogTagServer, ctx.Err())
-			s.showWindowMessage(ctx, protocol.MessageTypeWarning, "Formatting operation was cancelled")
-		} else {
-			log.Printf("%s%s Formatting failed with %s: %v", logging.LogTagLSP, logging.LogTagServer, provider.Name(), err)
-			s.showWindowMessage(ctx, protocol.MessageTypeError, fmt.Sprintf("Error formatting with %s: %v", provider.Name(), err))
-		}
-		return reply(ctx, []protocol.TextEdit{}, nil)
-	}
-
-	log.Printf("%s%s Formatting completed successfully with %s", logging.LogTagLSP, logging.LogTagServer, provider.Name())
-
-	// If content hasn't changed, return empty edits
-	if formattedContent == string(content) {
-		return reply(ctx, []protocol.TextEdit{}, nil)
-	}
-
-	// Calculate the range for the entire document
-	lines := strings.Split(string(content), "\n")
-	endLine := uint32(len(lines) - 1)
-	endCharacter := uint32(0)
-	if len(lines) > 0 {
-		endCharacter = uint32(len(lines[len(lines)-1]))
-	}
-
-	// Return a single text edit that replaces the entire document
-	textEdits := []protocol.TextEdit{
-		{
-			Range: protocol.Range{
-				Start: protocol.Position{Line: 0, Character: 0},
-				End:   protocol.Position{Line: endLine, Character: endCharacter},
-			},
-			NewText: formattedContent,
-		},
-	}
-
-	return reply(ctx, textEdits, nil)
+	s.scheduleFormatting(ctx, reply, params)
+	return nil
 }
