@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/cristianradulescu/php-diagls/internal/config"
-	"github.com/cristianradulescu/php-diagls/internal/container"
 	"github.com/cristianradulescu/php-diagls/internal/diagnostics"
 	"github.com/cristianradulescu/php-diagls/internal/formatting"
 	"github.com/cristianradulescu/php-diagls/internal/logging"
@@ -83,8 +82,6 @@ func (s *Server) Handle(ctx context.Context, reply jsonrpc2.Replier, req jsonrpc
 		return s.handleDidSave(ctx, reply, req)
 	case protocol.MethodTextDocumentFormatting:
 		return s.handleDocumentFormatting(ctx, reply, req)
-	case protocol.MethodTextDocumentCodeAction:
-		return s.handleCodeAction(ctx, reply, req)
 	case protocol.MethodWorkspaceDidChangeWatchedFiles:
 		return s.handleDidChangeWatchedFiles(ctx, reply, req)
 	case protocol.MethodShutdown:
@@ -540,79 +537,6 @@ func (s *Server) loadFormattingProviders() []formatting.FormattingProvider {
 	// Initialize and cache
 	s.formattingProviders = formatting.LoadFormattingProviders(s.serverConfig.DiagnosticsProviders)
 	return s.formattingProviders
-}
-
-func (s *Server) handleCodeAction(ctx context.Context, reply jsonrpc2.Replier, req jsonrpc2.Request) error {
-	var params protocol.CodeActionParams
-	if err := json.Unmarshal(req.Params(), &params); err != nil {
-		log.Printf("%s%s Error unmarshaling code action params: %v", logging.LogTagLSP, logging.LogTagServer, err)
-		return err
-	}
-
-	// Ensure php-cs-fixer provider is configured
-	providerCfg, ok := s.getPhpCsFixerProviderConfig()
-	if !ok {
-		return reply(ctx, []protocol.CodeAction{}, nil)
-	}
-
-	fileURI := params.TextDocument.URI
-	filePath := fileURI.Filename()
-
-	content, err := os.ReadFile(filePath)
-	if err != nil {
-		log.Printf("%s%s Error reading file for code action: %v", logging.LogTagLSP, logging.LogTagServer, err)
-		return reply(ctx, []protocol.CodeAction{}, nil)
-	}
-	original := string(content)
-
-	var actions []protocol.CodeAction
-
-	// Add a quick fix to apply all php-cs-fixer fixes for the file
-	{
-		configArg := ""
-		if providerCfg.ConfigFile != "" {
-			configArg = fmt.Sprintf("--config %s", providerCfg.ConfigFile)
-		}
-		cmd := fmt.Sprintf("%s fix - --diff %s", providerCfg.Path, configArg)
-		result := container.RunCommandInContainer(ctx, providerCfg.Container, cmd, original)
-		diffStr := strings.TrimSpace(string(result.Stdout))
-
-		if diffStr != "" && (result.ExitCode == 0 || result.ExitCode == 8) {
-			if formatted, applyErr := utils.ApplyUnifiedDiff(original, diffStr); applyErr == nil && formatted != original {
-				lines := strings.Split(original, "\n")
-				endLine := uint32(len(lines) - 1)
-				endCharacter := uint32(0)
-				if len(lines) > 0 {
-					endCharacter = uint32(len(lines[len(lines)-1]))
-				}
-
-				fullEdits := []protocol.TextEdit{
-					{
-						Range: protocol.Range{
-							Start: protocol.Position{Line: 0, Character: 0},
-							End:   protocol.Position{Line: endLine, Character: endCharacter},
-						},
-						NewText: formatted,
-					},
-				}
-
-				weAll := protocol.WorkspaceEdit{
-					Changes: map[protocol.DocumentURI][]protocol.TextEdit{
-						fileURI: fullEdits,
-					},
-				}
-
-				actions = append(actions, protocol.CodeAction{
-					Title:       "Apply php-cs-fixer: Fix all issues",
-					Kind:        protocol.QuickFix,
-					Edit:        &weAll,
-					Diagnostics: []protocol.Diagnostic{},
-				})
-			}
-		}
-	}
-
-	return reply(ctx, actions, nil)
 }
 
 func (s *Server) getPhpCsFixerProviderConfig() (config.DiagnosticsProvider, bool) {

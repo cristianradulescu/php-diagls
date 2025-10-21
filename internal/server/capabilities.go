@@ -26,11 +26,6 @@ func serverCapabilities() protocol.ServerCapabilities {
 			},
 		},
 		DocumentFormattingProvider: true,
-		CodeActionProvider: &protocol.CodeActionOptions{
-			CodeActionKinds: []protocol.CodeActionKind{
-				protocol.QuickFix,
-			},
-		},
 	}
 }
 
