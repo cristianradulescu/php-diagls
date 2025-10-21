@@ -56,38 +56,41 @@ func (dp *PhpCsFixer) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 	if dp.config.ConfigFile != "" {
 		configArg = fmt.Sprintf("--config %s", dp.config.ConfigFile)
 	}
-	fullAnalysisCmdOutput, _ := container.RunCommandInContainer(
+	result := container.RunCommandInContainer(
 		context.Background(),
 		dp.config.Container,
 		fmt.Sprintf("%s fix %s --dry-run --diff --verbose --format json %s 2>/dev/null", dp.config.Path, relativeFilePath, configArg),
 	)
-	// TODO: process specific phpcsfixer exit codes
-	// log.Printf("Full analysis cmd result: %s", string(fullAnalysisCmdOutput))
+
+	if result.Err != nil {
+		log.Printf("Error running php-cs-fixer: %v", result.Err)
+		return []protocol.Diagnostic{}, nil
+	}
 
 	var fullAnalysisResult PhpCsFixerOutputResult
-	if err := json.Unmarshal(fullAnalysisCmdOutput, &fullAnalysisResult); err != nil {
+	if err := json.Unmarshal(result.Stdout, &fullAnalysisResult); err != nil {
 		log.Printf("Unmarshall err: %s", err)
 		return []protocol.Diagnostic{}, nil
 	}
 
-	// Run the analysis again, this time by specifying the rule. This should provide the better details for the diagnostics.
 	for _, file := range fullAnalysisResult.Files {
 		for _, rule := range file.Rules {
-			ruleAnalysisCmdOutput, _ := container.RunCommandInContainer(
+			ruleResult := container.RunCommandInContainer(
 				context.Background(),
 				dp.config.Container,
 				fmt.Sprintf("%s fix %s --dry-run --diff --verbose --format json --rules %s 2>/dev/null", dp.config.Path, relativeFilePath, rule),
 			)
 
-			// log.Printf("Rule analysis cmd result: %s", string(ruleAnalysisCmdOutput))
+			if ruleResult.Err != nil {
+				log.Printf("Error running php-cs-fixer for rule %s: %v", rule, ruleResult.Err)
+				continue
+			}
 
 			var ruleAnalysisResult PhpCsFixerOutputResult
-			if err := json.Unmarshal(ruleAnalysisCmdOutput, &ruleAnalysisResult); err != nil {
+			if err := json.Unmarshal(ruleResult.Stdout, &ruleAnalysisResult); err != nil {
 				log.Printf("Unmarshall err: %s", err)
 				return []protocol.Diagnostic{}, nil
 			}
-
-			// log.Printf("Rule analysis files: %v", ruleAnalysisResult.Files)
 
 			for _, file := range ruleAnalysisResult.Files {
 				if file.Diff != "" {
@@ -180,15 +183,14 @@ func (dp *PhpCsFixer) explainRule(rule string) string {
 		return cachedDescription.(string)
 	}
 
-	fullRuleDescriptionOutput, _ := container.RunCommandInContainer(
+	result := container.RunCommandInContainer(
 		context.Background(),
 		dp.config.Container,
 		fmt.Sprintf("%s describe %s 2>/dev/null", dp.config.Path, rule),
 	)
 
-	fullRuleDescription := strings.TrimSpace(string(fullRuleDescriptionOutput))
+	fullRuleDescription := strings.TrimSpace(string(result.Stdout))
 
-	// Keep only the actual description without example and config info
 	re1 := regexp.MustCompile(`Description of .* rule.`)
 	ruleDescription := re1.ReplaceAllString(fullRuleDescription, "")
 	re2 := regexp.MustCompile(`(?s)(Fixer is configurable|Fixer applying).*`)
@@ -207,15 +209,13 @@ func (dp *PhpCsFixer) CanFormat() bool {
 }
 
 func (dp *PhpCsFixer) Format(ctx context.Context, filePath string, content string) (string, error) {
-	// Check if formatting is enabled
 	if !dp.CanFormat() {
 		return content, fmt.Errorf("formatting is not enabled for %s", dp.Name())
 	}
 
-	// Add timeout context if not already present
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
-		timeout := 30 * time.Second // Default timeout
+		timeout := 30 * time.Second
 		if dp.config.Format.TimeoutSeconds > 0 {
 			timeout = time.Duration(dp.config.Format.TimeoutSeconds) * time.Second
 		}
@@ -224,55 +224,42 @@ func (dp *PhpCsFixer) Format(ctx context.Context, filePath string, content strin
 		log.Printf("%s%s Added %v timeout for php-cs-fixer formatting", logging.LogTagLSP, logging.LogTagServer, timeout)
 	}
 
-	// Build the php-cs-fixer command with --diff to get formatting changes
 	configArg := ""
 	if dp.config.ConfigFile != "" {
 		configArg = fmt.Sprintf("--config %s", dp.config.ConfigFile)
 	}
 
-	// Use stdin with --diff to get the formatting diff without modifying files
 	cmd := fmt.Sprintf("%s fix - --diff %s", dp.config.Path, configArg)
 
 	startTime := time.Now()
-	diffOutput, err := container.RunCommandInContainer(ctx, dp.config.Container, cmd, content)
+	result := container.RunCommandInContainer(ctx, dp.config.Container, cmd, content)
 	duration := time.Since(startTime)
-	if err != nil {
-		// Check if the error is due to context cancellation
+
+	if result.Err != nil {
 		if ctx.Err() != nil {
 			log.Printf("%s%s php-cs-fixer execution cancelled: %v", logging.LogTagLSP, logging.LogTagServer, ctx.Err())
 			return content, fmt.Errorf("formatting cancelled: %w", ctx.Err())
 		}
 
-		log.Printf("%s%s php-cs-fixer returned non-zero exit code: %v", logging.LogTagLSP, logging.LogTagServer, err)
-
-		// php-cs-fixer exit codes:
-		// 0 = OK, no changes needed
-		// 8 = Changes found (SUCCESS with --diff flag)
-		// 1 = General errors
-		// 2 = Configuration errors
-		// 16 = Configuration file has invalid format
-		// 32 = Configuration file has invalid content
-
-		// Check if this is exit code 8 (changes found) which is success for --diff
-		if strings.Contains(err.Error(), "exit status 8") {
-			log.Printf("%s%s php-cs-fixer found formatting changes (exit code 8 is success) in %v", logging.LogTagLSP, logging.LogTagServer, duration)
-			// Continue processing - this is actually success
-		} else {
-			log.Printf("%s%s php-cs-fixer failed with error after %v: %v", logging.LogTagLSP, logging.LogTagServer, duration, err)
-			log.Printf("%s%s php-cs-fixer output (might contain error info): %s", logging.LogTagLSP, logging.LogTagServer, string(diffOutput))
-			return content, fmt.Errorf("php-cs-fixer command failed (exit code indicates error): %w", err)
-		}
-	} else {
-		log.Printf("%s%s php-cs-fixer completed successfully in %v, output length: %d bytes", logging.LogTagLSP, logging.LogTagServer, duration, len(diffOutput))
+		log.Printf("%s%s php-cs-fixer failed after %v: %v", logging.LogTagLSP, logging.LogTagServer, duration, result.Err)
+		return content, fmt.Errorf("php-cs-fixer command failed: %w", result.Err)
 	}
 
-	// If no diff output, content is already formatted
-	diffStr := strings.TrimSpace(string(diffOutput))
+	if result.ExitCode == 8 {
+		log.Printf("%s%s php-cs-fixer found formatting changes (exit code 8) in %v", logging.LogTagLSP, logging.LogTagServer, duration)
+	} else if result.ExitCode != 0 {
+		log.Printf("%s%s php-cs-fixer returned non-zero exit code %d after %v", logging.LogTagLSP, logging.LogTagServer, result.ExitCode, duration)
+		log.Printf("%s%s php-cs-fixer stderr: %s", logging.LogTagLSP, logging.LogTagServer, string(result.Stderr))
+		return content, fmt.Errorf("php-cs-fixer failed with exit code %d", result.ExitCode)
+	} else {
+		log.Printf("%s%s php-cs-fixer completed successfully in %v, output length: %d bytes", logging.LogTagLSP, logging.LogTagServer, duration, len(result.Stdout))
+	}
+
+	diffStr := strings.TrimSpace(string(result.Stdout))
 	if diffStr == "" {
 		return content, nil
 	}
 
-	// Parse the diff and apply changes to get formatted content
 	formattedContent, err := utils.ApplyUnifiedDiff(content, diffStr)
 	if err != nil {
 		return content, fmt.Errorf("failed to apply diff: %w", err)

@@ -52,15 +52,19 @@ func (dp *PhpStan) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 	if dp.config.ConfigFile != "" {
 		configArg = fmt.Sprintf("--configuration=%s", dp.config.ConfigFile)
 	}
-	fullAnalysisCmdOutput, _ := container.RunCommandInContainer(
+	result := container.RunCommandInContainer(
 		context.Background(),
 		dp.config.Container,
 		fmt.Sprintf("%s analyze %s --memory-limit=-1 --no-progress --error-format=json %s 2>/dev/null", dp.config.Path, relativeFilePath, configArg),
 	)
-	// log.Printf("Full analysis cmd result: %s", string(fullAnalysisCmdOutput))
+
+	if result.Err != nil {
+		log.Printf("Error running phpstan: %v", result.Err)
+		return []protocol.Diagnostic{}, nil
+	}
 
 	var fullAnalysisResult PhpstanOutputResult
-	if err := json.Unmarshal(fullAnalysisCmdOutput, &fullAnalysisResult); err != nil {
+	if err := json.Unmarshal(result.Stdout, &fullAnalysisResult); err != nil {
 		log.Printf("Unmarshall err: %s", err)
 		return []protocol.Diagnostic{}, nil
 	}

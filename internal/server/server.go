@@ -574,11 +574,10 @@ func (s *Server) handleCodeAction(ctx context.Context, reply jsonrpc2.Replier, r
 			configArg = fmt.Sprintf("--config %s", providerCfg.ConfigFile)
 		}
 		cmd := fmt.Sprintf("%s fix - --diff %s", providerCfg.Path, configArg)
-		diffOutput, allErr := container.RunCommandInContainer(ctx, providerCfg.Container, cmd, original)
-		diffStr := strings.TrimSpace(string(diffOutput))
+		result := container.RunCommandInContainer(ctx, providerCfg.Container, cmd, original)
+		diffStr := strings.TrimSpace(string(result.Stdout))
 
-		// Treat exit status 8 (changes found) as success for diff mode
-		if diffStr != "" && (allErr == nil || strings.Contains(allErr.Error(), "exit status 8")) {
+		if diffStr != "" && (result.ExitCode == 0 || result.ExitCode == 8) {
 			if formatted, applyErr := utils.ApplyUnifiedDiff(original, diffStr); applyErr == nil && formatted != original {
 				lines := strings.Split(original, "\n")
 				endLine := uint32(len(lines) - 1)

@@ -10,7 +10,14 @@ import (
 	"time"
 )
 
-func RunCommandInContainer(ctx context.Context, containerName string, containerCmd string, stdin ...string) ([]byte, error) {
+type CommandResult struct {
+	Stdout   []byte
+	Stderr   []byte
+	ExitCode int
+	Err      error
+}
+
+func RunCommandInContainer(ctx context.Context, containerName string, containerCmd string, stdin ...string) *CommandResult {
 	log.Printf("Running cmd: %s", containerCmd)
 
 	stdinInput := ""
@@ -32,13 +39,16 @@ func RunCommandInContainer(ctx context.Context, containerName string, containerC
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	// Start the command
 	err := cmd.Start()
 	if err != nil {
-		return nil, fmt.Errorf("failed to start command: %w", err)
+		return &CommandResult{
+			Stdout:   nil,
+			Stderr:   nil,
+			ExitCode: -1,
+			Err:      fmt.Errorf("failed to start command: %w", err),
+		}
 	}
 
-	// Wait for completion or cancellation
 	done := make(chan error, 1)
 	go func() {
 		done <- cmd.Wait()
@@ -46,19 +56,37 @@ func RunCommandInContainer(ctx context.Context, containerName string, containerC
 
 	select {
 	case err := <-done:
+		exitCode := 0
 		if err != nil {
-			return stdout.Bytes(), fmt.Errorf("cmd returned error %s: %s", err, stderr.String())
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				exitCode = exitErr.ExitCode()
+			} else {
+				return &CommandResult{
+					Stdout:   stdout.Bytes(),
+					Stderr:   stderr.Bytes(),
+					ExitCode: -1,
+					Err:      err,
+				}
+			}
 		}
-		return stdout.Bytes(), nil
+		return &CommandResult{
+			Stdout:   stdout.Bytes(),
+			Stderr:   stderr.Bytes(),
+			ExitCode: exitCode,
+			Err:      nil,
+		}
 	case <-ctx.Done():
-		// Context cancelled - kill the process
 		log.Printf("Command cancelled, killing process: %s", containerCmd)
 		if cmd.Process != nil {
 			cmd.Process.Kill()
 		}
-		// Wait for the process to finish after killing
 		<-done
-		return stdout.Bytes(), fmt.Errorf("command cancelled: %w", ctx.Err())
+		return &CommandResult{
+			Stdout:   stdout.Bytes(),
+			Stderr:   stderr.Bytes(),
+			ExitCode: -1,
+			Err:      fmt.Errorf("command cancelled: %w", ctx.Err()),
+		}
 	}
 }
 
@@ -87,10 +115,10 @@ func ValidateBinaryInContainer(containerName string, binaryPath string) error {
 	defer cancel()
 
 	containerCmd := fmt.Sprintf("which %s", binaryPath)
-	cmdOutput, _ := RunCommandInContainer(ctx, containerName, containerCmd)
+	result := RunCommandInContainer(ctx, containerName, containerCmd)
 
-	if strings.TrimSpace(string(cmdOutput)) != binaryPath {
-		return fmt.Errorf("binary %s not found in container %s; docker output: %s", binaryPath, containerName, cmdOutput)
+	if strings.TrimSpace(string(result.Stdout)) != binaryPath {
+		return fmt.Errorf("binary %s not found in container %s; docker output: %s", binaryPath, containerName, result.Stdout)
 	}
 
 	return nil

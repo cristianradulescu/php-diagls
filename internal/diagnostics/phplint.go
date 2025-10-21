@@ -38,19 +38,18 @@ func (dp *PhpLint) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 	projectRoot := utils.FindProjectRoot(filePath)
 	relativeFilePath, _ := filepath.Rel(projectRoot, filePath)
 
-	fullAnalysisCmdOutput, err := container.RunCommandInContainer(
+	result := container.RunCommandInContainer(
 		context.Background(),
 		dp.config.Container,
 		fmt.Sprintf("%s -l %s 2>&1", dp.config.Path, relativeFilePath),
 	)
 
-	output := string(fullAnalysisCmdOutput)
+	output := string(result.Stdout)
 	if strings.HasPrefix(output, "No syntax errors detected") {
 		return diagnostics, nil
 	}
 
-	// Parse error:  syntax error, unexpected 'echo' (T_ECHO), expecting ',' or ';' in /path/to/file.php on line 5
-	re := regexp.MustCompile(`Parse error:\s+(.*) in .* on line (\d+)`)
+	re := regexp.MustCompile(`[Fatal|Parse] error:\s+(.*) in .* on line (\d+)`)
 	matches := re.FindStringSubmatch(output)
 
 	if len(matches) == 3 {
@@ -71,8 +70,8 @@ func (dp *PhpLint) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 		return diagnostics, nil
 	}
 
-	if err != nil {
-		log.Printf("Error running phplint command: %v. Output: %s", err, output)
+	if result.Err != nil {
+		log.Printf("Error running phplint command: %v. Output: %s", result.Err, output)
 	}
 
 	return diagnostics, nil
