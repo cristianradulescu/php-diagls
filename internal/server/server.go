@@ -20,7 +20,10 @@ import (
 	"go.lsp.dev/protocol"
 )
 
-const debounceInterval = 5 * time.Second
+const (
+	diagnosticsDebounceInterval = 300 * time.Millisecond
+	formattingDebounceInterval  = 100 * time.Millisecond
+)
 
 // Server represents the Language Server Protocol (LSP) server
 type Server struct {
@@ -30,18 +33,19 @@ type Server struct {
 	diagnosticsProviders []diagnostics.DiagnosticsProvider
 	formattingProviders  []formatting.FormattingProvider
 
-	// Debounce for diagnostics (per-file)
-	// WARNING: Per-file debouncing for diagnostics means only the last diagnostics request
-	// per file within debounceInterval will be processed. Requests for other files are unaffected.
+	// In-memory document cache for synchronized content
+	docMu     sync.RWMutex
+	documents map[protocol.DocumentURI]string
+
+	// Debounce for diagnostics (per-file) with last-wins strategy
 	diagMu     sync.Mutex
 	diagTimers map[protocol.DocumentURI]*time.Timer
 	diagGen    map[protocol.DocumentURI]uint64
 
-	// Debounce for formatting (per-file)
-	// WARNING: Per-file debouncing for formatting means only the last formatting request
-	// per file within debounceInterval will be executed for that file.
+	// Debounce for formatting (per-file) with last-wins strategy
 	fmtMu     sync.Mutex
 	fmtTimers map[protocol.DocumentURI]*time.Timer
+	fmtGen    map[protocol.DocumentURI]uint64
 }
 
 // New creates a new LSP server instance
@@ -49,9 +53,11 @@ func New(conn jsonrpc2.Conn) *Server {
 	s := &Server{
 		conn:         conn,
 		serverConfig: &config.Config{},
+		documents:    make(map[protocol.DocumentURI]string),
 		diagTimers:   make(map[protocol.DocumentURI]*time.Timer),
 		diagGen:      make(map[protocol.DocumentURI]uint64),
 		fmtTimers:    make(map[protocol.DocumentURI]*time.Timer),
+		fmtGen:       make(map[protocol.DocumentURI]uint64),
 	}
 
 	return s
@@ -121,9 +127,6 @@ func (s *Server) handleInitialize(ctx context.Context, reply jsonrpc2.Replier, r
 		serverConfig, err := s.serverConfig.LoadConfig(projectRoot)
 		if err != nil {
 			log.Printf("%s%s No config: %v", logging.LogTagLSP, logging.LogTagServer, err)
-
-			// s.showWindowMessage(ctx, protocol.MessageTypeWarning, fmt.Sprintf("%s", err))
-			// s.showWindowMessage(ctx, protocol.MessageTypeWarning, "Exiting...")
 			os.Exit(0)
 		}
 		s.serverConfig = serverConfig
@@ -179,6 +182,7 @@ func (s *Server) handleDidOpen(ctx context.Context, _ jsonrpc2.Replier, req json
 		return err
 	}
 
+	s.setDocumentContent(params.TextDocument.URI, params.TextDocument.Text)
 	s.scheduleDiagnostics(params.TextDocument.URI)
 
 	return nil
@@ -192,6 +196,11 @@ func (s *Server) handleDidChange(ctx context.Context, _ jsonrpc2.Replier, req js
 		return err
 	}
 
+	if len(params.ContentChanges) > 0 {
+		lastChange := params.ContentChanges[len(params.ContentChanges)-1]
+		s.setDocumentContent(params.TextDocument.URI, lastChange.Text)
+	}
+
 	s.scheduleDiagnostics(params.TextDocument.URI)
 
 	return nil
@@ -203,6 +212,10 @@ func (s *Server) handleDidSave(ctx context.Context, _ jsonrpc2.Replier, req json
 		log.Printf("%s%s Error unmarshaling %s params: %v", logging.LogTagLSP, logging.LogTagServer, req.Method(), err)
 
 		return err
+	}
+
+	if params.Text != "" {
+		s.setDocumentContent(params.TextDocument.URI, params.Text)
 	}
 
 	s.scheduleDiagnosticsPriority(params.TextDocument.URI)
@@ -240,6 +253,7 @@ func (s *Server) handleDidClose(ctx context.Context, _ jsonrpc2.Replier, req jso
 		return err
 	}
 
+	s.deleteDocumentContent(params.TextDocument.URI)
 	s.scheduleDiagnostics(params.TextDocument.URI)
 
 	return nil
@@ -290,88 +304,77 @@ func (s *Server) publishDiagnostics(ctx context.Context, uri protocol.DocumentUR
 	}
 }
 
-func (s *Server) scheduleDiagnostics(uri protocol.DocumentURI) {
-	// WARNING: Per-file first-wins gating for diagnostics.
-	// Only the first diagnostics request per file within debounceInterval will be processed.
-	// Subsequent requests received before completion or expiry of the interval are discarded.
-	s.diagMu.Lock()
-	if _, exists := s.diagTimers[uri]; exists {
-		// A diagnostics run is already in-flight or within the gating window; discard this request.
-		s.diagMu.Unlock()
-		return
-	}
-	// Bump generation for this URI and capture it to guard publication ordering
-	if s.diagGen == nil {
-		s.diagGen = make(map[protocol.DocumentURI]uint64)
-	}
-	s.diagGen[uri]++
-	gen := s.diagGen[uri]
-
-	// Create a gating timer to auto-clear after debounceInterval in case the run takes too long.
-	s.diagTimers[uri] = time.AfterFunc(debounceInterval, func() {
-		s.diagMu.Lock()
-		delete(s.diagTimers, uri)
-		s.diagMu.Unlock()
-	})
-	s.diagMu.Unlock()
-
-	// Process immediately
-	go func(u protocol.DocumentURI, g uint64) {
-		filePath := u.Filename()
-		diags := s.collectDiagnostics(context.Background(), filePath)
-
-		// Check generation before publishing to avoid stale diagnostics overriding newer ones
-		s.diagMu.Lock()
-		currentGen := s.diagGen[u]
-		s.diagMu.Unlock()
-		if g != currentGen {
-			// Stale result, drop it
-			return
-		}
-
-		s.publishDiagnostics(context.Background(), u, diags)
-
-		// Clear the gate upon completion (even if before the interval)
-		s.diagMu.Lock()
-		if t, ok := s.diagTimers[u]; ok {
-			t.Stop()
-			delete(s.diagTimers, u)
-		}
-		s.diagMu.Unlock()
-	}(uri, gen)
+func (s *Server) setDocumentContent(uri protocol.DocumentURI, content string) {
+	s.docMu.Lock()
+	defer s.docMu.Unlock()
+	s.documents[uri] = content
 }
 
-// scheduleDiagnosticsPriority runs diagnostics with priority for the given URI.
-// It cancels any gating window and ensures this run's results take precedence.
-func (s *Server) scheduleDiagnosticsPriority(uri protocol.DocumentURI) {
-	// WARNING: didSave priority - this will preempt existing diagnostics gates for the same file.
+func (s *Server) getDocumentContent(uri protocol.DocumentURI) (string, bool) {
+	s.docMu.RLock()
+	defer s.docMu.RUnlock()
+	content, exists := s.documents[uri]
+	return content, exists
+}
+
+func (s *Server) deleteDocumentContent(uri protocol.DocumentURI) {
+	s.docMu.Lock()
+	defer s.docMu.Unlock()
+	delete(s.documents, uri)
+}
+
+func (s *Server) scheduleDiagnostics(uri protocol.DocumentURI) {
 	s.diagMu.Lock()
-	// Stop and clear any existing gate for this URI
-	if t, ok := s.diagTimers[uri]; ok {
-		t.Stop()
-		delete(s.diagTimers, uri)
+
+	if timer, exists := s.diagTimers[uri]; exists {
+		timer.Stop()
 	}
-	// Bump generation and capture it so this run's results supersede earlier ones
+
 	if s.diagGen == nil {
 		s.diagGen = make(map[protocol.DocumentURI]uint64)
 	}
 	s.diagGen[uri]++
 	gen := s.diagGen[uri]
 
-	// Set a short-lived gate to prevent immediate duplicate triggers; it will be cleared on completion
-	s.diagTimers[uri] = time.AfterFunc(debounceInterval, func() {
+	s.diagTimers[uri] = time.AfterFunc(diagnosticsDebounceInterval, func() {
 		s.diagMu.Lock()
 		delete(s.diagTimers, uri)
 		s.diagMu.Unlock()
+
+		filePath := uri.Filename()
+		diags := s.collectDiagnostics(context.Background(), filePath)
+
+		s.diagMu.Lock()
+		currentGen := s.diagGen[uri]
+		s.diagMu.Unlock()
+		if gen != currentGen {
+			return
+		}
+
+		s.publishDiagnostics(context.Background(), uri, diags)
 	})
 	s.diagMu.Unlock()
+}
 
-	// Process immediately with priority
+func (s *Server) scheduleDiagnosticsPriority(uri protocol.DocumentURI) {
+	s.diagMu.Lock()
+
+	if timer, exists := s.diagTimers[uri]; exists {
+		timer.Stop()
+		delete(s.diagTimers, uri)
+	}
+
+	if s.diagGen == nil {
+		s.diagGen = make(map[protocol.DocumentURI]uint64)
+	}
+	s.diagGen[uri]++
+	gen := s.diagGen[uri]
+	s.diagMu.Unlock()
+
 	go func(u protocol.DocumentURI, g uint64) {
 		filePath := u.Filename()
 		diags := s.collectDiagnostics(context.Background(), filePath)
 
-		// Ensure we still hold the latest generation before publishing
 		s.diagMu.Lock()
 		currentGen := s.diagGen[u]
 		s.diagMu.Unlock()
@@ -380,118 +383,84 @@ func (s *Server) scheduleDiagnosticsPriority(uri protocol.DocumentURI) {
 		}
 
 		s.publishDiagnostics(context.Background(), u, diags)
-
-		// Clear gate for this URI
-		s.diagMu.Lock()
-		if t, ok := s.diagTimers[u]; ok {
-			t.Stop()
-			delete(s.diagTimers, u)
-		}
-		s.diagMu.Unlock()
 	}(uri, gen)
 }
 
 func (s *Server) scheduleFormatting(ctx context.Context, reply jsonrpc2.Replier, params protocol.DocumentFormattingParams) {
 	uri := params.TextDocument.URI
 
-	// WARNING: Per-file first-wins gating for formatting.
-	// Only the first formatting request per file within debounceInterval will be executed.
-	// Subsequent requests received before completion or expiry of the interval are discarded (empty edits).
 	s.fmtMu.Lock()
-	if _, exists := s.fmtTimers[uri]; exists {
-		s.fmtMu.Unlock()
-		// Discard this request quickly so client doesn't wait
-		_ = reply(ctx, []protocol.TextEdit{}, nil)
-		return
+
+	if timer, exists := s.fmtTimers[uri]; exists {
+		timer.Stop()
 	}
-	// Create a gating timer to auto-clear after debounceInterval in case the run takes too long.
-	s.fmtTimers[uri] = time.AfterFunc(debounceInterval, func() {
+
+	if s.fmtGen == nil {
+		s.fmtGen = make(map[protocol.DocumentURI]uint64)
+	}
+	s.fmtGen[uri]++
+	gen := s.fmtGen[uri]
+
+	s.fmtTimers[uri] = time.AfterFunc(formattingDebounceInterval, func() {
 		s.fmtMu.Lock()
 		delete(s.fmtTimers, uri)
+		currentGen := s.fmtGen[uri]
 		s.fmtMu.Unlock()
-	})
-	s.fmtMu.Unlock()
 
-	filePath := uri.Filename()
-
-	// Read current file content
-	content, err := os.ReadFile(filePath)
-	if err != nil {
-		_ = reply(ctx, nil, fmt.Errorf("failed to read file: %w", err))
-		s.fmtMu.Lock()
-		if t, ok := s.fmtTimers[uri]; ok {
-			t.Stop()
-			delete(s.fmtTimers, uri)
+		if gen != currentGen {
+			_ = reply(ctx, []protocol.TextEdit{}, nil)
+			return
 		}
-		s.fmtMu.Unlock()
-		return
-	}
 
-	formattingProviders := s.loadFormattingProviders()
-	if len(formattingProviders) == 0 {
-		_ = reply(ctx, []protocol.TextEdit{}, nil)
-		s.fmtMu.Lock()
-		if t, ok := s.fmtTimers[uri]; ok {
-			t.Stop()
-			delete(s.fmtTimers, uri)
+		filePath := uri.Filename()
+
+		content, exists := s.getDocumentContent(uri)
+		if !exists {
+			fileContent, err := os.ReadFile(filePath)
+			if err != nil {
+				_ = reply(ctx, nil, fmt.Errorf("failed to read file: %w", err))
+				return
+			}
+			content = string(fileContent)
 		}
-		s.fmtMu.Unlock()
-		return
-	}
 
-	// Apply formatting using the first available provider
-	provider := formattingProviders[0]
-	formattedContent, err := provider.Format(ctx, filePath, string(content))
-	if err != nil {
-		_ = reply(ctx, []protocol.TextEdit{}, nil)
-		s.fmtMu.Lock()
-		if t, ok := s.fmtTimers[uri]; ok {
-			t.Stop()
-			delete(s.fmtTimers, uri)
+		formattingProviders := s.loadFormattingProviders()
+		if len(formattingProviders) == 0 {
+			_ = reply(ctx, []protocol.TextEdit{}, nil)
+			return
 		}
-		s.fmtMu.Unlock()
-		return
-	}
 
-	// If content hasn't changed, return empty edits
-	if formattedContent == string(content) {
-		_ = reply(ctx, []protocol.TextEdit{}, nil)
-		s.fmtMu.Lock()
-		if t, ok := s.fmtTimers[uri]; ok {
-			t.Stop()
-			delete(s.fmtTimers, uri)
+		provider := formattingProviders[0]
+		formattedContent, err := provider.Format(ctx, filePath, content)
+		if err != nil {
+			_ = reply(ctx, []protocol.TextEdit{}, nil)
+			return
 		}
-		s.fmtMu.Unlock()
-		return
-	}
 
-	// Calculate the range for the entire document
-	lines := strings.Split(string(content), "\n")
-	endLine := uint32(len(lines) - 1)
-	endCharacter := uint32(0)
-	if len(lines) > 0 {
-		endCharacter = uint32(len(lines[len(lines)-1]))
-	}
+		if formattedContent == content {
+			_ = reply(ctx, []protocol.TextEdit{}, nil)
+			return
+		}
 
-	// Return a single text edit that replaces the entire document
-	textEdits := []protocol.TextEdit{
-		{
-			Range: protocol.Range{
-				Start: protocol.Position{Line: 0, Character: 0},
-				End:   protocol.Position{Line: endLine, Character: endCharacter},
+		lines := strings.Split(content, "\n")
+		endLine := uint32(len(lines) - 1)
+		endCharacter := uint32(0)
+		if len(lines) > 0 {
+			endCharacter = uint32(len(lines[len(lines)-1]))
+		}
+
+		textEdits := []protocol.TextEdit{
+			{
+				Range: protocol.Range{
+					Start: protocol.Position{Line: 0, Character: 0},
+					End:   protocol.Position{Line: endLine, Character: endCharacter},
+				},
+				NewText: formattedContent,
 			},
-			NewText: formattedContent,
-		},
-	}
+		}
 
-	_ = reply(ctx, textEdits, nil)
-
-	// Clear the gate upon completion (even if before the interval)
-	s.fmtMu.Lock()
-	if t, ok := s.fmtTimers[uri]; ok {
-		t.Stop()
-		delete(s.fmtTimers, uri)
-	}
+		_ = reply(ctx, textEdits, nil)
+	})
 	s.fmtMu.Unlock()
 }
 
