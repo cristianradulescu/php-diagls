@@ -94,7 +94,7 @@ func ValidateContainer(containerName string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "docker", "ps", "--filter", fmt.Sprintf("name=%s", containerName), "--format", "{{.Names}}")
+	cmd := exec.CommandContext(ctx, "docker", "ps", "--filter", fmt.Sprintf("name=^%s$", containerName), "--format", "{{.Names}}")
 	cmdOutput, err := cmd.Output()
 	if err != nil {
 		if ctx.Err() != nil {
