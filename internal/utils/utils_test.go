@@ -241,3 +241,171 @@ func TestSnakeCaseToHumanReadable(t *testing.T) {
 		})
 	}
 }
+
+func TestCopyFile(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T) (src, dst string)
+		wantErr bool
+		verify  func(t *testing.T, src, dst string)
+	}{
+		{
+			name: "copy valid file",
+			setup: func(t *testing.T) (src, dst string) {
+				t.Helper()
+				tmpDir := t.TempDir()
+
+				// Create source file
+				src = filepath.Join(tmpDir, "source.txt")
+				content := "Hello, World!\nThis is a test file."
+				if err := os.WriteFile(src, []byte(content), 0644); err != nil {
+					t.Fatalf("Failed to create source file: %v", err)
+				}
+
+				// Destination path
+				dst = filepath.Join(tmpDir, "destination.txt")
+				return src, dst
+			},
+			wantErr: false,
+			verify: func(t *testing.T, src, dst string) {
+				t.Helper()
+				// Verify destination file exists
+				if _, err := os.Stat(dst); os.IsNotExist(err) {
+					t.Error("Destination file was not created")
+					return
+				}
+
+				// Verify content matches
+				srcContent, err := os.ReadFile(src)
+				if err != nil {
+					t.Fatalf("Failed to read source: %v", err)
+				}
+				dstContent, err := os.ReadFile(dst)
+				if err != nil {
+					t.Fatalf("Failed to read destination: %v", err)
+				}
+
+				if string(srcContent) != string(dstContent) {
+					t.Errorf("Content mismatch.\nSource: %s\nDestination: %s",
+						string(srcContent), string(dstContent))
+				}
+			},
+		},
+		{
+			name: "source file does not exist",
+			setup: func(t *testing.T) (src, dst string) {
+				t.Helper()
+				tmpDir := t.TempDir()
+				src = filepath.Join(tmpDir, "nonexistent.txt")
+				dst = filepath.Join(tmpDir, "destination.txt")
+				return src, dst
+			},
+			wantErr: true,
+			verify:  nil,
+		},
+		{
+			name: "destination directory does not exist",
+			setup: func(t *testing.T) (src, dst string) {
+				t.Helper()
+				tmpDir := t.TempDir()
+
+				// Create source file
+				src = filepath.Join(tmpDir, "source.txt")
+				if err := os.WriteFile(src, []byte("test"), 0644); err != nil {
+					t.Fatalf("Failed to create source file: %v", err)
+				}
+
+				// Destination in non-existent directory
+				dst = filepath.Join(tmpDir, "nonexistent", "destination.txt")
+				return src, dst
+			},
+			wantErr: true,
+			verify:  nil,
+		},
+		{
+			name: "copy preserves content exactly",
+			setup: func(t *testing.T) (src, dst string) {
+				t.Helper()
+				tmpDir := t.TempDir()
+
+				// Create source with various content
+				src = filepath.Join(tmpDir, "source.txt")
+				content := "Line 1\nLine 2\n\nLine 4 with special chars: !@#$%^&*()\nUnicode: 你好世界 🎉"
+				if err := os.WriteFile(src, []byte(content), 0644); err != nil {
+					t.Fatalf("Failed to create source file: %v", err)
+				}
+
+				dst = filepath.Join(tmpDir, "destination.txt")
+				return src, dst
+			},
+			wantErr: false,
+			verify: func(t *testing.T, src, dst string) {
+				t.Helper()
+				srcContent, _ := os.ReadFile(src)
+				dstContent, _ := os.ReadFile(dst)
+
+				// Byte-by-byte comparison
+				if len(srcContent) != len(dstContent) {
+					t.Errorf("File sizes differ: src=%d, dst=%d", len(srcContent), len(dstContent))
+				}
+
+				for i := 0; i < len(srcContent) && i < len(dstContent); i++ {
+					if srcContent[i] != dstContent[i] {
+						t.Errorf("Byte mismatch at position %d: src=%d, dst=%d",
+							i, srcContent[i], dstContent[i])
+						break
+					}
+				}
+			},
+		},
+		{
+			name: "copy empty file",
+			setup: func(t *testing.T) (src, dst string) {
+				t.Helper()
+				tmpDir := t.TempDir()
+
+				src = filepath.Join(tmpDir, "empty.txt")
+				if err := os.WriteFile(src, []byte(""), 0644); err != nil {
+					t.Fatalf("Failed to create empty file: %v", err)
+				}
+
+				dst = filepath.Join(tmpDir, "empty-copy.txt")
+				return src, dst
+			},
+			wantErr: false,
+			verify: func(t *testing.T, src, dst string) {
+				t.Helper()
+				dstContent, err := os.ReadFile(dst)
+				if err != nil {
+					t.Fatalf("Failed to read destination: %v", err)
+				}
+				if len(dstContent) != 0 {
+					t.Errorf("Expected empty file, got %d bytes", len(dstContent))
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src, dst := tt.setup(t)
+
+			err := utils.CopyFile(src, dst)
+
+			// Check error expectation
+			if tt.wantErr && err == nil {
+				t.Error("Expected error but got none")
+				return
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("Unexpected error: %v", err)
+				return
+			}
+
+			// Run verification if provided and no error expected
+			if !tt.wantErr && tt.verify != nil {
+				tt.verify(t, src, dst)
+			}
+		})
+	}
+}
