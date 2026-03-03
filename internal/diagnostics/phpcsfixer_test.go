@@ -199,7 +199,7 @@ func TestPhpCsFixer_Format_NotEnabled(t *testing.T) {
 	provider := diagnostics.NewPhpCsFixer(providerConfig)
 
 	content := "<?php\necho 'test';\n"
-	result, err := provider.Format(context.Background(), "/tmp/test.php", content)
+	result, err := provider.Format(t.Context(), "/tmp/test.php", content)
 
 	if err == nil {
 		t.Error("Format should return error when formatting is disabled")
@@ -228,7 +228,7 @@ func TestPhpCsFixer_Format_Timeout(t *testing.T) {
 	content := "<?php\necho 'test';\n"
 
 	start := time.Now()
-	result, err := provider.Format(context.Background(), "/tmp/test.php", content)
+	result, err := provider.Format(t.Context(), "/tmp/test.php", content)
 	duration := time.Since(start)
 
 	// Should fail since container doesn't exist
@@ -259,7 +259,7 @@ func TestPhpCsFixer_Format_ContextCancellation(t *testing.T) {
 	provider := diagnostics.NewPhpCsFixer(providerConfig)
 
 	// Create a context that's already cancelled
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	content := "<?php\necho 'test';\n"

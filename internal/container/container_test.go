@@ -105,7 +105,7 @@ func TestRunCommandInContainer_ContextHandling(t *testing.T) {
 		{
 			name: "immediate context cancellation",
 			setupCtx: func() (context.Context, context.CancelFunc) {
-				ctx, cancel := context.WithCancel(context.Background())
+				ctx, cancel := context.WithCancel(t.Context())
 				cancel() // Cancel immediately
 				return ctx, cancel
 			},
@@ -115,7 +115,7 @@ func TestRunCommandInContainer_ContextHandling(t *testing.T) {
 		{
 			name: "context with very short timeout",
 			setupCtx: func() (context.Context, context.CancelFunc) {
-				return context.WithTimeout(context.Background(), 1*time.Nanosecond)
+				return context.WithTimeout(t.Context(), 1*time.Nanosecond)
 			},
 			command:     "sleep 10",
 			expectError: true,
@@ -194,7 +194,7 @@ func TestRunCommandInContainer_InputValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 			defer cancel()
 
 			result := container.RunCommandInContainer(ctx, tt.containerName, tt.command, tt.stdin...)
@@ -247,7 +247,7 @@ func TestCommandResult_Structure(t *testing.T) {
 
 // TestRunCommandInContainer_ErrorMessages tests error message content
 func TestRunCommandInContainer_ErrorMessages(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Test with non-existent container
 	result := container.RunCommandInContainer(ctx, "non-existent-container-xyz", "echo test")
@@ -325,7 +325,7 @@ func TestValidateContainer_ErrorMessages(t *testing.T) {
 
 // TestRunCommandInContainer_StdoutStderr tests stdout/stderr capture
 func TestRunCommandInContainer_StdoutStderr(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 
 	// This will fail, but we're testing that stdout/stderr are captured

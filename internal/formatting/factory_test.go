@@ -107,7 +107,7 @@ func TestNewFormattingProvider_PhpCsFixer(t *testing.T) {
 					// Verify Format method exists and returns expected behavior
 					// Since we don't have Docker, we expect it to fail but not panic
 					content := "<?php echo 'test';"
-					result, err := provider.Format(context.Background(), "/tmp/test.php", content)
+					result, err := provider.Format(t.Context(), "/tmp/test.php", content)
 					if err == nil {
 						t.Log("Format succeeded (Docker available)")
 					} else {
@@ -365,7 +365,7 @@ func TestLoadFormattingProviders_ProvidersAreUsable(t *testing.T) {
 
 	// Verify Format method is callable (even if it fails without Docker)
 	content := "<?php echo 'test';"
-	result, err := provider.Format(context.Background(), "/tmp/test.php", content)
+	result, err := provider.Format(t.Context(), "/tmp/test.php", content)
 
 	// Without Docker, we expect an error, but the provider should handle it gracefully
 	if err == nil {
@@ -417,7 +417,7 @@ func TestFormattingProvider_InterfaceCompliance(t *testing.T) {
 	t.Run("Format method", func(t *testing.T) {
 		// Should not panic when called
 		content := "<?php\necho 'test';\n"
-		result, err := provider.Format(context.Background(), "/tmp/test.php", content)
+		result, err := provider.Format(t.Context(), "/tmp/test.php", content)
 
 		// Result should never be empty (either formatted or original)
 		if result == "" && err != nil {
@@ -425,7 +425,7 @@ func TestFormattingProvider_InterfaceCompliance(t *testing.T) {
 		}
 
 		// Should handle context properly
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 		cancel() // Cancel immediately
 
 		result, err = provider.Format(ctx, "/tmp/test.php", content)
