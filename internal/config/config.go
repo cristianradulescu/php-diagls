@@ -27,11 +27,12 @@ type FormatConfig struct {
 }
 
 type DiagnosticsProvider struct {
-	Enabled    bool         `json:"enabled"`
-	Container  string       `json:"container"`
-	Path       string       `json:"path"`
-	ConfigFile string       `json:"configFile"`
-	Format     FormatConfig `json:"format"`
+	Enabled      bool         `json:"enabled"`
+	Container    string       `json:"container"`
+	Path         string       `json:"path"`
+	ConfigFile   string       `json:"configFile"`
+	Format       FormatConfig `json:"format"`
+	ExcludePaths []string     `json:"excludePaths,omitempty"`
 }
 
 func (config *Config) IsInitialized() bool {

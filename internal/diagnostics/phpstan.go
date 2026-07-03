@@ -48,6 +48,10 @@ func (dp *PhpStan) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 	projectRoot := utils.FindProjectRoot(filePath)
 	relativeFilePath, _ := filepath.Rel(projectRoot, filePath)
 
+	if utils.IsPathExcluded(relativeFilePath, dp.config.ExcludePaths) {
+		return diagnostics, nil
+	}
+
 	configArg := ""
 	if dp.config.ConfigFile != "" {
 		configArg = fmt.Sprintf("--configuration=%s", dp.config.ConfigFile)

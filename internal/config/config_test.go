@@ -41,6 +41,32 @@ func TestConfig_LoadConfig(t *testing.T) {
 			},
 		},
 		{
+			name: "valid config with excludePaths",
+			configContent: `{
+				"diagnosticsProviders": {
+					"phpcsfixer": {
+						"enabled": true,
+						"container": "my-php-container",
+						"path": "/usr/local/bin/php-cs-fixer",
+						"configFile": ".php-cs-fixer.dist.php",
+						"excludePaths": ["tests", "var", "public"]
+					}
+				}
+			}`,
+			expectedError: false,
+			expectedConfig: &config.Config{
+				DiagnosticsProviders: map[string]config.DiagnosticsProvider{
+					"phpcsfixer": {
+						Enabled:      true,
+						Container:    "my-php-container",
+						Path:         "/usr/local/bin/php-cs-fixer",
+						ConfigFile:   ".php-cs-fixer.dist.php",
+						ExcludePaths: []string{"tests", "var", "public"},
+					},
+				},
+			},
+		},
+		{
 			name: "valid config with multiple providers",
 			configContent: `{
 				"diagnosticsProviders": {
@@ -169,6 +195,17 @@ func TestConfig_LoadConfig(t *testing.T) {
 				if actualProvider.ConfigFile != expectedProvider.ConfigFile {
 					t.Errorf("Provider %s: expected configFile=%s, got %s",
 						id, expectedProvider.ConfigFile, actualProvider.ConfigFile)
+				}
+				if len(actualProvider.ExcludePaths) != len(expectedProvider.ExcludePaths) {
+					t.Errorf("Provider %s: expected excludePaths=%v, got %v",
+						id, expectedProvider.ExcludePaths, actualProvider.ExcludePaths)
+				} else {
+					for i, expectedPath := range expectedProvider.ExcludePaths {
+						if actualProvider.ExcludePaths[i] != expectedPath {
+							t.Errorf("Provider %s: expected excludePaths[%d]=%s, got %s",
+								id, i, expectedPath, actualProvider.ExcludePaths[i])
+						}
+					}
 				}
 			}
 

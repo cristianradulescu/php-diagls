@@ -38,6 +38,10 @@ func (dp *PhpLint) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 	projectRoot := utils.FindProjectRoot(filePath)
 	relativeFilePath, _ := filepath.Rel(projectRoot, filePath)
 
+	if utils.IsPathExcluded(relativeFilePath, dp.config.ExcludePaths) {
+		return diagnostics, nil
+	}
+
 	result := container.RunCommandInContainer(
 		context.Background(),
 		dp.config.Container,

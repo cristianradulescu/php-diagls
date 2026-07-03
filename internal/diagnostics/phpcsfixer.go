@@ -52,6 +52,10 @@ func (dp *PhpCsFixer) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 	projectRoot := utils.FindProjectRoot(filePath)
 	relativeFilePath, _ := filepath.Rel(projectRoot, filePath)
 
+	if utils.IsPathExcluded(relativeFilePath, dp.config.ExcludePaths) {
+		return diagnostics, nil
+	}
+
 	configArg := ""
 	if dp.config.ConfigFile != "" {
 		configArg = fmt.Sprintf("--config %s", dp.config.ConfigFile)
@@ -211,6 +215,12 @@ func (dp *PhpCsFixer) CanFormat() bool {
 func (dp *PhpCsFixer) Format(ctx context.Context, filePath string, content string) (string, error) {
 	if !dp.CanFormat() {
 		return content, fmt.Errorf("formatting is not enabled for %s", dp.Name())
+	}
+
+	projectRoot := utils.FindProjectRoot(filePath)
+	relativeFilePath, _ := filepath.Rel(projectRoot, filePath)
+	if utils.IsPathExcluded(relativeFilePath, dp.config.ExcludePaths) {
+		return content, nil
 	}
 
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {

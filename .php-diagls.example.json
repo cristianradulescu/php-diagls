@@ -9,7 +9,8 @@
       "format": {
         "enabled": true,
         "timeoutSeconds": 30
-      }
+      },
+      "excludePaths": ["tests", "var", "public"]
     },
     "phpstan": {
       "enabled": false,

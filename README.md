@@ -31,7 +31,8 @@ Create a `.php-diagls.json` file in your project root directory to configure the
       "configFile": ".php-cs-fixer.dist.php",
       "format": {
         "enabled": true
-      }
+      },
+      "excludePaths": ["tests", "var", "public"]
     },
     "phpstan": {
       "enabled": false,
@@ -56,6 +57,9 @@ Create a `.php-diagls.json` file in your project root directory to configure the
 - **`configFile`**: (Optional) Path to the diagnostic provider configuration file inside the container
 - **`format.enabled`**: (Optional) Enable document formatting using this provider
 - **`format.timeoutSeconds`**: (Optional) Nb of seconds to allow the formatting process to run 
+- **`excludePaths`**: (Optional) List of paths, relative to the project root, to exclude from this provider's diagnostics and formatting. Each entry can be a directory name (e.g. `"tests"`, matched against any path segment), an exact relative path (e.g. `"config/services.php"`), or a glob pattern (e.g. `"src/Legacy/*"`)
+
+> **Note:** Tools like php-cs-fixer only apply their own `Finder`-based `exclude()`/`in()` rules when run **without** an explicit file argument. Since php-diagls always invokes the tool against a specific file, those excludes are never consulted — use the `excludePaths` option above to replicate them (e.g. mirror your `.php-cs-fixer.dist.php` Finder excludes here).
 
 
 ## Document Formatting

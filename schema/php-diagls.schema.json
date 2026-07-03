@@ -59,6 +59,14 @@
             "phpstan.neon",
             "phpstan.dist.neon"
           ]
+        },
+        "excludePaths": {
+          "type": "array",
+          "description": "Paths (relative to project root) to exclude from this provider's diagnostics/formatting. Supports directory names, exact relative paths, and glob patterns.",
+          "items": {
+            "type": "string"
+          },
+          "examples": [["tests"], ["var", "public"], ["src/Legacy/*"]]
         }
       },
       "required": ["enabled", "container", "path"],
@@ -123,6 +131,14 @@
         "format": {
           "$ref": "#/$defs/formatConfig",
           "description": "Document formatting configuration for PHP CS Fixer"
+        },
+        "excludePaths": {
+          "type": "array",
+          "description": "Paths (relative to project root) to exclude from PHP CS Fixer diagnostics/formatting. Supports directory names, exact relative paths, and glob patterns. Note: php-cs-fixer's own Finder excludes are ignored when a file path is passed explicitly, so use this option to replicate them.",
+          "items": {
+            "type": "string"
+          },
+          "examples": [["tests"], ["var", "public"], ["src/Legacy/*"]]
         }
       },
       "required": ["enabled", "container", "path"],
@@ -164,6 +180,14 @@
             "phpstan.neon.dist",
             "tools/phpstan.neon"
           ]
+        },
+        "excludePaths": {
+          "type": "array",
+          "description": "Paths (relative to project root) to exclude from PHPStan diagnostics. Supports directory names, exact relative paths, and glob patterns.",
+          "items": {
+            "type": "string"
+          },
+          "examples": [["tests"], ["var", "public"], ["src/Legacy/*"]]
         }
       },
       "required": ["enabled", "container", "path"],

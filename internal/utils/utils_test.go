@@ -409,3 +409,82 @@ func TestCopyFile(t *testing.T) {
 		})
 	}
 }
+
+func TestIsPathExcluded(t *testing.T) {
+	tests := []struct {
+		name         string
+		relativePath string
+		excludePaths []string
+		expected     bool
+	}{
+		{
+			name:         "no exclude paths configured",
+			relativePath: "tests/Foo.php",
+			excludePaths: nil,
+			expected:     false,
+		},
+		{
+			name:         "directory name matches top-level segment",
+			relativePath: "tests/Foo.php",
+			excludePaths: []string{"tests"},
+			expected:     true,
+		},
+		{
+			name:         "directory name matches nested segment",
+			relativePath: "tests/Unit/Foo.php",
+			excludePaths: []string{"tests"},
+			expected:     true,
+		},
+		{
+			name:         "file not under excluded directory",
+			relativePath: "src/Foo.php",
+			excludePaths: []string{"tests"},
+			expected:     false,
+		},
+		{
+			name:         "exact relative path match",
+			relativePath: "config/services.php",
+			excludePaths: []string{"config/services.php"},
+			expected:     true,
+		},
+		{
+			name:         "glob pattern match",
+			relativePath: "src/Legacy/Foo.php",
+			excludePaths: []string{"src/Legacy*"},
+			expected:     true,
+		},
+		{
+			name:         "leading/trailing slashes are trimmed from pattern",
+			relativePath: "tests/Foo.php",
+			excludePaths: []string{"/tests/"},
+			expected:     true,
+		},
+		{
+			name:         "multiple patterns, one matches",
+			relativePath: "public/index.php",
+			excludePaths: []string{"tests", "var", "public"},
+			expected:     true,
+		},
+		{
+			name:         "multiple patterns, none match",
+			relativePath: "src/Foo.php",
+			excludePaths: []string{"tests", "var", "public"},
+			expected:     false,
+		},
+		{
+			name:         "empty relative path",
+			relativePath: "",
+			excludePaths: []string{"tests"},
+			expected:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := utils.IsPathExcluded(tt.relativePath, tt.excludePaths)
+			if result != tt.expected {
+				t.Errorf("IsPathExcluded(%q, %v) = %v; expected %v", tt.relativePath, tt.excludePaths, result, tt.expected)
+			}
+		})
+	}
+}

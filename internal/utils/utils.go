@@ -38,6 +38,56 @@ func FindProjectRoot(filePath string) string {
 	return filepath.Dir(filePath)
 }
 
+// IsPathExcluded reports whether relativePath (a project-root-relative path,
+// using '/' separators) matches any of the given exclude patterns.
+//
+// A pattern matches if:
+//   - it equals a path segment/directory that the file lives under
+//     (e.g. pattern "tests" excludes "tests/Foo.php" and "tests/Sub/Bar.php"),
+//   - it equals the relative path itself, or
+//   - it is a glob pattern (per filepath.Match) that matches the relative
+//     path or any of its parent directories.
+func IsPathExcluded(relativePath string, excludePaths []string) bool {
+	if relativePath == "" || len(excludePaths) == 0 {
+		return false
+	}
+
+	normalizedPath := filepath.ToSlash(relativePath)
+	segments := strings.Split(normalizedPath, "/")
+
+	for _, rawPattern := range excludePaths {
+		pattern := strings.Trim(filepath.ToSlash(rawPattern), "/")
+		if pattern == "" {
+			continue
+		}
+
+		if pattern == normalizedPath {
+			return true
+		}
+
+		// Directory-style match: pattern matches any path segment
+		// (e.g. "tests" excludes everything under a "tests" directory).
+		for _, segment := range segments[:len(segments)-1] {
+			if segment == pattern {
+				return true
+			}
+		}
+
+		// Glob match against the full path and each parent directory prefix.
+		if matched, err := filepath.Match(pattern, normalizedPath); err == nil && matched {
+			return true
+		}
+		for i := 1; i < len(segments); i++ {
+			prefix := strings.Join(segments[:i], "/")
+			if matched, err := filepath.Match(pattern, prefix); err == nil && matched {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
 func EnsureDiagnosticsArray(diagnostics []protocol.Diagnostic) []protocol.Diagnostic {
 	if diagnostics == nil {
 		return make([]protocol.Diagnostic, 0)
