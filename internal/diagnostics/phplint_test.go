@@ -100,7 +100,7 @@ func TestPhpLint_OutputParsing(t *testing.T) {
 	}
 
 	// Document expected regex pattern
-	expectedRegex := `[Fatal|Parse] error:\s+(.*) in .* on line (\d+)`
+	expectedRegex := `(?:Fatal|Parse) error:\s+(.*) in .* on line (\d+)`
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

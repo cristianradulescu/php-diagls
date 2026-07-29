@@ -28,6 +28,13 @@ const (
 	maxConcurrentRuleAnalyses = 4
 )
 
+var (
+	hunkHeaderRegexp         = regexp.MustCompile(`@@\s+-(\d+),(\d+)?\s+\+(\d+),(\d+)?\s+@@`)
+	ruleDescriptionPrefixRe  = regexp.MustCompile(`Description of .* rule.`)
+	ruleDescriptionConfigRe  = regexp.MustCompile(`(?s)(Fixer is configurable|Fixer applying).*`)
+	ruleDescriptionExampleRe = regexp.MustCompile(`(?s)Fixing examples:.*`)
+)
+
 type PhpCsFixerOutputResult struct {
 	Files []struct {
 		Name  string   `json:"name"`
@@ -182,16 +189,13 @@ func (dp *PhpCsFixer) parseDiffForDiagnostics(diff string) []protocol.Range {
 	lines := strings.Split(diff, "\n")
 	originalLineNum, originalColNum, lineChange := 0, 0, false
 
-	re := `@@\s+-(\d+),(\d+)?\s+\+(\d+),(\d+)?\s+@@`
-	reC := regexp.MustCompile(re)
-
 	for _, line := range lines {
 		if strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++") {
 			continue
 		}
 
 		if strings.HasPrefix(line, "@@") {
-			matches := reC.FindStringSubmatch(line)
+			matches := hunkHeaderRegexp.FindStringSubmatch(line)
 			if len(matches) >= 3 {
 				if origLine, err := strconv.Atoi(matches[1]); err == nil {
 					originalLineNum = origLine - 1
@@ -247,12 +251,9 @@ func (dp *PhpCsFixer) explainRule(ctx context.Context, rule string) string {
 
 	fullRuleDescription := strings.TrimSpace(string(result.Stdout))
 
-	re1 := regexp.MustCompile(`Description of .* rule.`)
-	ruleDescription := re1.ReplaceAllString(fullRuleDescription, "")
-	re2 := regexp.MustCompile(`(?s)(Fixer is configurable|Fixer applying).*`)
-	ruleDescription = re2.ReplaceAllString(ruleDescription, "")
-	re3 := regexp.MustCompile(`(?s)Fixing examples:.*`)
-	ruleDescription = re3.ReplaceAllString(ruleDescription, "")
+	ruleDescription := ruleDescriptionPrefixRe.ReplaceAllString(fullRuleDescription, "")
+	ruleDescription = ruleDescriptionConfigRe.ReplaceAllString(ruleDescription, "")
+	ruleDescription = ruleDescriptionExampleRe.ReplaceAllString(ruleDescription, "")
 
 	dp.ruleDescriptions.Store(rule, ruleDescription)
 

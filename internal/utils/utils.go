@@ -12,6 +12,8 @@ import (
 	"go.lsp.dev/protocol"
 )
 
+var hunkHeaderRegexp = regexp.MustCompile(`@@\s+-(\d+),(\d+)?\s+\+(\d+),(\d+)?\s+@@`)
+
 func URIToPath(uri protocol.DocumentURI) string {
 	return strings.TrimPrefix(string(uri), "file://")
 }
@@ -127,8 +129,6 @@ func ApplyUnifiedDiff(originalContent, diff string) (string, error) {
 	result := make([]string, 0, len(lines))
 	originalLineNum := 0
 
-	re := regexp.MustCompile(`@@\s+-(\d+),(\d+)?\s+\+(\d+),(\d+)?\s+@@`)
-
 	i := 0
 	for i < len(diffLines) {
 		line := diffLines[i]
@@ -141,7 +141,7 @@ func ApplyUnifiedDiff(originalContent, diff string) (string, error) {
 
 		// Handle hunk header
 		if strings.HasPrefix(line, "@@") {
-			matches := re.FindStringSubmatch(line)
+			matches := hunkHeaderRegexp.FindStringSubmatch(line)
 			if len(matches) >= 2 {
 				if startLine, err := strconv.Atoi(matches[1]); err == nil {
 					// Copy lines before this hunk

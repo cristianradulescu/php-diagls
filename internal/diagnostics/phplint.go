@@ -20,6 +20,12 @@ const (
 	PhpLintProviderName string = "php-lint"
 )
 
+// syntaxErrorRegexp matches php -l's "Fatal error: ..."/"Parse error: ..."
+// output. Uses a non-capturing alternation, not a character class, so it
+// requires the literal word "Fatal" or "Parse" rather than any single
+// character drawn from those letters.
+var syntaxErrorRegexp = regexp.MustCompile(`(?:Fatal|Parse) error:\s+(.*) in .* on line (\d+)`)
+
 type PhpLint struct {
 	config config.DiagnosticsProvider
 }
@@ -53,8 +59,7 @@ func (dp *PhpLint) Analyze(ctx context.Context, filePath string) ([]protocol.Dia
 		return diagnostics, nil
 	}
 
-	re := regexp.MustCompile(`[Fatal|Parse] error:\s+(.*) in .* on line (\d+)`)
-	matches := re.FindStringSubmatch(output)
+	matches := syntaxErrorRegexp.FindStringSubmatch(output)
 
 	if len(matches) == 3 {
 		line, convErr := strconv.Atoi(matches[2])
