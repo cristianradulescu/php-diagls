@@ -260,14 +260,30 @@ func (s *Server) handleDidClose(ctx context.Context, _ jsonrpc2.Replier, req jso
 
 	s.deleteDocumentContent(params.TextDocument.URI)
 	s.cancelScheduledDiagnostics(params.TextDocument.URI)
+	s.clearFormattingGeneration(params.TextDocument.URI)
 	s.publishDiagnostics(ctx, params.TextDocument.URI, []protocol.Diagnostic{})
 
 	return nil
 }
 
-// cancelScheduledDiagnostics stops any pending debounced analysis for uri and
-// bumps its generation so an in-flight analysis discards its result instead
-// of overwriting diagnostics published after it (e.g. on close).
+// clearFormattingGeneration drops uri's formatting generation counter so it
+// doesn't linger in fmtGen for the rest of the session. Unlike diagnostics,
+// a pending formatting timer must not be stopped here: scheduleFormatting
+// owns an LSP reply that has to fire exactly once, and deleting the
+// generation entry (rather than the timer) still lets that happen - the
+// callback just takes its "superseded" branch and replies with no edits.
+func (s *Server) clearFormattingGeneration(uri protocol.DocumentURI) {
+	s.fmtMu.Lock()
+	defer s.fmtMu.Unlock()
+	delete(s.fmtGen, uri)
+}
+
+// cancelScheduledDiagnostics stops any pending debounced analysis for uri,
+// cancels one already in flight, and drops uri's debounce/generation state
+// entirely so it doesn't linger in these maps for the rest of the session
+// (e.g. on close). An in-flight analysis discards its result instead of
+// overwriting diagnostics published after it, since its captured generation
+// can no longer match a deleted map entry.
 func (s *Server) cancelScheduledDiagnostics(uri protocol.DocumentURI) {
 	s.diagMu.Lock()
 	defer s.diagMu.Unlock()
@@ -279,12 +295,10 @@ func (s *Server) cancelScheduledDiagnostics(uri protocol.DocumentURI) {
 
 	if cancel, exists := s.diagCancel[uri]; exists {
 		cancel()
+		delete(s.diagCancel, uri)
 	}
 
-	if s.diagGen == nil {
-		s.diagGen = make(map[protocol.DocumentURI]uint64)
-	}
-	s.diagGen[uri]++
+	delete(s.diagGen, uri)
 }
 
 // beginDiagnosticsRun cancels any diagnostics analysis already in flight for

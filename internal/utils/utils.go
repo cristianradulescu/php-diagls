@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/cristianradulescu/php-diagls/internal/config"
@@ -14,13 +15,30 @@ import (
 
 var hunkHeaderRegexp = regexp.MustCompile(`@@\s+-(\d+),(\d+)?\s+\+(\d+),(\d+)?\s+@@`)
 
+// projectRootCache memoizes FindProjectRoot by the file's starting directory.
+// The project root can't change during a session (config is loaded once at
+// initialize), so repeated analyses of the same file/directory don't need to
+// re-walk the filesystem with os.Stat every time.
+var projectRootCache sync.Map // map[string]string: starting dir -> resolved root
+
 func URIToPath(uri protocol.DocumentURI) string {
 	return strings.TrimPrefix(string(uri), "file://")
 }
 
 // Find the project root directory by looking for the config file
 func FindProjectRoot(filePath string) string {
-	dir := filepath.Dir(filePath)
+	startDir := filepath.Dir(filePath)
+	if cached, ok := projectRootCache.Load(startDir); ok {
+		return cached.(string)
+	}
+
+	root := findProjectRoot(startDir)
+	projectRootCache.Store(startDir, root)
+	return root
+}
+
+func findProjectRoot(startDir string) string {
+	dir := startDir
 
 	for {
 		configPath := filepath.Join(dir, config.ConfigFileName)
@@ -36,8 +54,8 @@ func FindProjectRoot(filePath string) string {
 		dir = parent
 	}
 
-	// If no config found, use the directory of the file
-	return filepath.Dir(filePath)
+	// If no config found, use the starting directory
+	return startDir
 }
 
 // IsPathExcluded reports whether relativePath (a project-root-relative path,
