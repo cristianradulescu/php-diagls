@@ -49,7 +49,7 @@ func (dp *PhpCsFixer) Name() string {
 	return PhpCsFixerProviderName
 }
 
-func (dp *PhpCsFixer) Analyze(filePath string) ([]protocol.Diagnostic, error) {
+func (dp *PhpCsFixer) Analyze(ctx context.Context, filePath string) ([]protocol.Diagnostic, error) {
 	var diagnostics []protocol.Diagnostic
 
 	projectRoot := utils.FindProjectRoot(filePath)
@@ -64,7 +64,7 @@ func (dp *PhpCsFixer) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 		configArg = fmt.Sprintf("--config %s", dp.config.ConfigFile)
 	}
 	result := container.RunCommandInContainer(
-		context.Background(),
+		ctx,
 		dp.config.Container,
 		fmt.Sprintf("%s fix %s --dry-run --diff --verbose --format json %s 2>/dev/null", dp.config.Path, relativeFilePath, configArg),
 	)
@@ -91,7 +91,7 @@ func (dp *PhpCsFixer) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 						Range:    lineRange,
 						Severity: protocol.DiagnosticSeverityWarning,
 						Source:   dp.Name(),
-						Message:  dp.explainRule(rule),
+						Message:  dp.explainRule(ctx, rule),
 						Code:     rule,
 					})
 				}
@@ -115,7 +115,7 @@ func (dp *PhpCsFixer) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 			go func(i int, rule string) {
 				defer wg.Done()
 				defer func() { <-sem }()
-				ruleDiagnostics[i] = dp.analyzeRule(relativeFilePath, rule)
+				ruleDiagnostics[i] = dp.analyzeRule(ctx, relativeFilePath, rule)
 			}(i, rule)
 		}
 		wg.Wait()
@@ -130,11 +130,11 @@ func (dp *PhpCsFixer) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 
 // analyzeRule isolates the diagnostics for a single rule violated in
 // relativeFilePath by re-running php-cs-fixer restricted to that rule.
-func (dp *PhpCsFixer) analyzeRule(relativeFilePath string, rule string) []protocol.Diagnostic {
+func (dp *PhpCsFixer) analyzeRule(ctx context.Context, relativeFilePath string, rule string) []protocol.Diagnostic {
 	var diagnostics []protocol.Diagnostic
 
 	ruleResult := container.RunCommandInContainer(
-		context.Background(),
+		ctx,
 		dp.config.Container,
 		fmt.Sprintf("%s fix %s --dry-run --diff --verbose --format json --rules %s 2>/dev/null", dp.config.Path, relativeFilePath, rule),
 	)
@@ -161,7 +161,7 @@ func (dp *PhpCsFixer) analyzeRule(relativeFilePath string, rule string) []protoc
 				Range:    lineRange,
 				Severity: protocol.DiagnosticSeverityWarning,
 				Source:   dp.Name(),
-				Message:  dp.explainRule(rule),
+				Message:  dp.explainRule(ctx, rule),
 				Code:     rule,
 			})
 		}
@@ -234,13 +234,13 @@ func (dp *PhpCsFixer) parseDiffForDiagnostics(diff string) []protocol.Range {
 	return linesRange
 }
 
-func (dp *PhpCsFixer) explainRule(rule string) string {
+func (dp *PhpCsFixer) explainRule(ctx context.Context, rule string) string {
 	if cachedDescription, ok := dp.ruleDescriptions.Load(rule); ok {
 		return cachedDescription.(string)
 	}
 
 	result := container.RunCommandInContainer(
-		context.Background(),
+		ctx,
 		dp.config.Container,
 		fmt.Sprintf("%s describe %s 2>/dev/null", dp.config.Path, rule),
 	)

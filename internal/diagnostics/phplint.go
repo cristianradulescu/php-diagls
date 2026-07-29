@@ -32,7 +32,7 @@ func (dp *PhpLint) Name() string {
 	return PhpLintProviderName
 }
 
-func (dp *PhpLint) Analyze(filePath string) ([]protocol.Diagnostic, error) {
+func (dp *PhpLint) Analyze(ctx context.Context, filePath string) ([]protocol.Diagnostic, error) {
 	var diagnostics []protocol.Diagnostic
 
 	projectRoot := utils.FindProjectRoot(filePath)
@@ -43,7 +43,7 @@ func (dp *PhpLint) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 	}
 
 	result := container.RunCommandInContainer(
-		context.Background(),
+		ctx,
 		dp.config.Container,
 		fmt.Sprintf("%s -l %s 2>&1", dp.config.Path, relativeFilePath),
 	)

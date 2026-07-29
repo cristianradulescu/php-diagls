@@ -52,7 +52,7 @@ func TestPhpLint_Analyze(t *testing.T) {
 	testFile := tmpDir + "/test.php"
 
 	// Test with non-existent container - should handle gracefully
-	diagnostics, err := linter.Analyze(testFile)
+	diagnostics, err := linter.Analyze(t.Context(), testFile)
 
 	// Should not return error even if container doesn't exist
 	if err != nil {

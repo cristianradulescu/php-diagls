@@ -102,7 +102,7 @@ func TestPhpStan_Analyze(t *testing.T) {
 	testFile := tmpDir + "/test.php"
 
 	// Test with non-existent container - should handle gracefully
-	diagnostics, err := analyzer.Analyze(testFile)
+	diagnostics, err := analyzer.Analyze(t.Context(), testFile)
 
 	// Should not return error even if container doesn't exist
 	if err != nil {

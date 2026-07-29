@@ -171,7 +171,7 @@ echo "Hello World";
 
 	// This test documents the expected behavior when Docker is not available
 	// The provider should return an empty slice, not an error
-	diagnostics, err := provider.Analyze(tmpFile)
+	diagnostics, err := provider.Analyze(t.Context(), tmpFile)
 
 	if err != nil {
 		t.Errorf("Analyze should not return error for missing container, got: %v", err)

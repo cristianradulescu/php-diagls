@@ -1,6 +1,7 @@
 package diagnostics
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/cristianradulescu/php-diagls/internal/config"
@@ -11,7 +12,7 @@ import (
 type DiagnosticsProvider interface {
 	Id() string
 	Name() string
-	Analyze(filePath string) ([]protocol.Diagnostic, error)
+	Analyze(ctx context.Context, filePath string) ([]protocol.Diagnostic, error)
 }
 
 func NewDiagnosticsProvider(providerId string, providerConfig config.DiagnosticsProvider) (DiagnosticsProvider, error) {

@@ -22,6 +22,11 @@ import (
 const (
 	diagnosticsDebounceInterval = 300 * time.Millisecond
 	formattingDebounceInterval  = 100 * time.Millisecond
+
+	// diagnosticsTimeout bounds a single diagnostics analysis run, mirroring
+	// the default formatting timeout, so a wedged docker exec can't leak a
+	// goroutine/process for the life of the session.
+	diagnosticsTimeout = 30 * time.Second
 )
 
 // Server represents the Language Server Protocol (LSP) server
@@ -40,6 +45,7 @@ type Server struct {
 	diagMu     sync.Mutex
 	diagTimers map[protocol.DocumentURI]*time.Timer
 	diagGen    map[protocol.DocumentURI]uint64
+	diagCancel map[protocol.DocumentURI]context.CancelFunc
 
 	// Debounce for formatting (per-file) with last-wins strategy
 	fmtMu     sync.Mutex
@@ -55,6 +61,7 @@ func New(conn jsonrpc2.Conn) *Server {
 		documents:    make(map[protocol.DocumentURI]string),
 		diagTimers:   make(map[protocol.DocumentURI]*time.Timer),
 		diagGen:      make(map[protocol.DocumentURI]uint64),
+		diagCancel:   make(map[protocol.DocumentURI]context.CancelFunc),
 		fmtTimers:    make(map[protocol.DocumentURI]*time.Timer),
 		fmtGen:       make(map[protocol.DocumentURI]uint64),
 	}
@@ -270,10 +277,35 @@ func (s *Server) cancelScheduledDiagnostics(uri protocol.DocumentURI) {
 		delete(s.diagTimers, uri)
 	}
 
+	if cancel, exists := s.diagCancel[uri]; exists {
+		cancel()
+	}
+
 	if s.diagGen == nil {
 		s.diagGen = make(map[protocol.DocumentURI]uint64)
 	}
 	s.diagGen[uri]++
+}
+
+// beginDiagnosticsRun cancels any diagnostics analysis already in flight for
+// uri (a superseded generation) and returns a context bounded by
+// diagnosticsTimeout for the new run, so a wedged docker exec can't outlive
+// the analysis it belongs to.
+func (s *Server) beginDiagnosticsRun(uri protocol.DocumentURI) (context.Context, context.CancelFunc) {
+	s.diagMu.Lock()
+	defer s.diagMu.Unlock()
+
+	if cancel, exists := s.diagCancel[uri]; exists {
+		cancel()
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), diagnosticsTimeout)
+	if s.diagCancel == nil {
+		s.diagCancel = make(map[protocol.DocumentURI]context.CancelFunc)
+	}
+	s.diagCancel[uri] = cancel
+
+	return ctx, cancel
 }
 
 func (s *Server) handleShutdown(ctx context.Context, reply jsonrpc2.Replier, _ jsonrpc2.Request) error {
@@ -358,8 +390,11 @@ func (s *Server) scheduleDiagnostics(uri protocol.DocumentURI) {
 		delete(s.diagTimers, uri)
 		s.diagMu.Unlock()
 
+		ctx, cancel := s.beginDiagnosticsRun(uri)
+		defer cancel()
+
 		filePath := uri.Filename()
-		diags := s.collectDiagnostics(context.Background(), filePath)
+		diags := s.collectDiagnostics(ctx, filePath)
 
 		s.diagMu.Lock()
 		currentGen := s.diagGen[uri]
@@ -389,8 +424,11 @@ func (s *Server) scheduleDiagnosticsPriority(uri protocol.DocumentURI) {
 	s.diagMu.Unlock()
 
 	go func(u protocol.DocumentURI, g uint64) {
+		ctx, cancel := s.beginDiagnosticsRun(u)
+		defer cancel()
+
 		filePath := u.Filename()
-		diags := s.collectDiagnostics(context.Background(), filePath)
+		diags := s.collectDiagnostics(ctx, filePath)
 
 		s.diagMu.Lock()
 		currentGen := s.diagGen[u]
@@ -532,7 +570,7 @@ func (s *Server) collectDiagnostics(ctx context.Context, filePath string) []prot
 		go func() {
 			defer wg.Done()
 
-			providerDiagnostics, err := p.Analyze(filePath)
+			providerDiagnostics, err := p.Analyze(ctx, filePath)
 			if err != nil {
 				s.showWindowMessage(ctx, protocol.MessageTypeError, fmt.Sprintf("Diagnostics provider %s failed: %v", p.Name(), err))
 				return

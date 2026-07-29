@@ -42,7 +42,7 @@ func (dp *PhpStan) Name() string {
 	return PhpStanProviderName
 }
 
-func (dp *PhpStan) Analyze(filePath string) ([]protocol.Diagnostic, error) {
+func (dp *PhpStan) Analyze(ctx context.Context, filePath string) ([]protocol.Diagnostic, error) {
 	var diagnostics []protocol.Diagnostic
 
 	projectRoot := utils.FindProjectRoot(filePath)
@@ -57,7 +57,7 @@ func (dp *PhpStan) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 		configArg = fmt.Sprintf("--configuration=%s", dp.config.ConfigFile)
 	}
 	result := container.RunCommandInContainer(
-		context.Background(),
+		ctx,
 		dp.config.Container,
 		fmt.Sprintf("%s analyze %s --memory-limit=-1 --no-progress --error-format=json %s 2>/dev/null", dp.config.Path, relativeFilePath, configArg),
 	)
