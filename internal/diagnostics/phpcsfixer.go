@@ -22,6 +22,10 @@ import (
 const (
 	PhpCsFixerProviderId   string = "phpcsfixer"
 	PhpCsFixerProviderName string = "php-cs-fixer"
+
+	// maxConcurrentRuleAnalyses bounds how many per-rule docker execs run at
+	// once when isolating diagnostics for files with multiple violated rules.
+	maxConcurrentRuleAnalyses = 4
 )
 
 type PhpCsFixerOutputResult struct {
@@ -47,7 +51,6 @@ func (dp *PhpCsFixer) Name() string {
 
 func (dp *PhpCsFixer) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 	var diagnostics []protocol.Diagnostic
-	var linesRange []protocol.Range
 
 	projectRoot := utils.FindProjectRoot(filePath)
 	relativeFilePath, _ := filepath.Rel(projectRoot, filePath)
@@ -98,44 +101,73 @@ func (dp *PhpCsFixer) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 			continue
 		}
 
-		for _, rule := range file.Rules {
-			ruleResult := container.RunCommandInContainer(
-				context.Background(),
-				dp.config.Container,
-				fmt.Sprintf("%s fix %s --dry-run --diff --verbose --format json --rules %s 2>/dev/null", dp.config.Path, relativeFilePath, rule),
-			)
+		// The per-rule passes are independent docker execs; run them
+		// concurrently (bounded, so we don't fork one process per rule at
+		// once) instead of paying each one's PHP bootstrap serially.
+		rules := file.Rules
+		ruleDiagnostics := make([][]protocol.Diagnostic, len(rules))
+		sem := make(chan struct{}, maxConcurrentRuleAnalyses)
+		var wg sync.WaitGroup
 
-			if ruleResult.Err != nil {
-				log.Printf("Error running php-cs-fixer for rule %s: %v", rule, ruleResult.Err)
-				continue
-			}
+		for i, rule := range rules {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(i int, rule string) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				ruleDiagnostics[i] = dp.analyzeRule(relativeFilePath, rule)
+			}(i, rule)
+		}
+		wg.Wait()
 
-			var ruleAnalysisResult PhpCsFixerOutputResult
-			if err := json.Unmarshal(ruleResult.Stdout, &ruleAnalysisResult); err != nil {
-				log.Printf("Unmarshall err: %s", err)
-				return []protocol.Diagnostic{}, nil
-			}
-
-			for _, file := range ruleAnalysisResult.Files {
-				if file.Diff != "" {
-					linesRange = dp.parseDiffForDiagnostics(file.Diff)
-					for _, lineRange := range linesRange {
-						diagnostics = append(diagnostics, protocol.Diagnostic{
-							Range:    lineRange,
-							Severity: protocol.DiagnosticSeverityWarning,
-							Source:   dp.Name(),
-							Message:  dp.explainRule(rule),
-							Code:     rule,
-						})
-					}
-				} else {
-					log.Printf("No diff for file %s", file)
-				}
-			}
+		for _, diags := range ruleDiagnostics {
+			diagnostics = append(diagnostics, diags...)
 		}
 	}
 
 	return diagnostics, nil
+}
+
+// analyzeRule isolates the diagnostics for a single rule violated in
+// relativeFilePath by re-running php-cs-fixer restricted to that rule.
+func (dp *PhpCsFixer) analyzeRule(relativeFilePath string, rule string) []protocol.Diagnostic {
+	var diagnostics []protocol.Diagnostic
+
+	ruleResult := container.RunCommandInContainer(
+		context.Background(),
+		dp.config.Container,
+		fmt.Sprintf("%s fix %s --dry-run --diff --verbose --format json --rules %s 2>/dev/null", dp.config.Path, relativeFilePath, rule),
+	)
+
+	if ruleResult.Err != nil {
+		log.Printf("Error running php-cs-fixer for rule %s: %v", rule, ruleResult.Err)
+		return diagnostics
+	}
+
+	var ruleAnalysisResult PhpCsFixerOutputResult
+	if err := json.Unmarshal(ruleResult.Stdout, &ruleAnalysisResult); err != nil {
+		log.Printf("Unmarshall err: %s", err)
+		return diagnostics
+	}
+
+	for _, file := range ruleAnalysisResult.Files {
+		if file.Diff == "" {
+			log.Printf("No diff for file %s", file.Name)
+			continue
+		}
+
+		for _, lineRange := range dp.parseDiffForDiagnostics(file.Diff) {
+			diagnostics = append(diagnostics, protocol.Diagnostic{
+				Range:    lineRange,
+				Severity: protocol.DiagnosticSeverityWarning,
+				Source:   dp.Name(),
+				Message:  dp.explainRule(rule),
+				Code:     rule,
+			})
+		}
+	}
+
+	return diagnostics
 }
 
 func NewPhpCsFixer(providerConfig config.DiagnosticsProvider) *PhpCsFixer {
