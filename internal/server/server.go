@@ -252,9 +252,28 @@ func (s *Server) handleDidClose(ctx context.Context, _ jsonrpc2.Replier, req jso
 	}
 
 	s.deleteDocumentContent(params.TextDocument.URI)
-	s.scheduleDiagnostics(params.TextDocument.URI)
+	s.cancelScheduledDiagnostics(params.TextDocument.URI)
+	s.publishDiagnostics(ctx, params.TextDocument.URI, []protocol.Diagnostic{})
 
 	return nil
+}
+
+// cancelScheduledDiagnostics stops any pending debounced analysis for uri and
+// bumps its generation so an in-flight analysis discards its result instead
+// of overwriting diagnostics published after it (e.g. on close).
+func (s *Server) cancelScheduledDiagnostics(uri protocol.DocumentURI) {
+	s.diagMu.Lock()
+	defer s.diagMu.Unlock()
+
+	if timer, exists := s.diagTimers[uri]; exists {
+		timer.Stop()
+		delete(s.diagTimers, uri)
+	}
+
+	if s.diagGen == nil {
+		s.diagGen = make(map[protocol.DocumentURI]uint64)
+	}
+	s.diagGen[uri]++
 }
 
 func (s *Server) handleShutdown(ctx context.Context, reply jsonrpc2.Replier, _ jsonrpc2.Request) error {

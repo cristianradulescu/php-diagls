@@ -139,7 +139,7 @@ func TestServerHandle_MethodRouting(t *testing.T) {
 		{
 			method:      protocol.MethodTextDocumentDidClose,
 			handlerName: "handleDidClose",
-			description: "Removes cached content, schedules diagnostics",
+			description: "Removes cached content, publishes empty diagnostics directly",
 		},
 		{
 			method:      protocol.MethodTextDocumentDidSave,
