@@ -78,6 +78,26 @@ func (dp *PhpCsFixer) Analyze(filePath string) ([]protocol.Diagnostic, error) {
 	}
 
 	for _, file := range fullAnalysisResult.Files {
+		// A single violated rule means file.Diff already is that rule's isolated
+		// diff, so the extra --rules pass below would just reproduce it.
+		if len(file.Rules) == 1 {
+			rule := file.Rules[0]
+			if file.Diff != "" {
+				for _, lineRange := range dp.parseDiffForDiagnostics(file.Diff) {
+					diagnostics = append(diagnostics, protocol.Diagnostic{
+						Range:    lineRange,
+						Severity: protocol.DiagnosticSeverityWarning,
+						Source:   dp.Name(),
+						Message:  dp.explainRule(rule),
+						Code:     rule,
+					})
+				}
+			} else {
+				log.Printf("No diff for file %s", file.Name)
+			}
+			continue
+		}
+
 		for _, rule := range file.Rules {
 			ruleResult := container.RunCommandInContainer(
 				context.Background(),
