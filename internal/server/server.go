@@ -198,7 +198,8 @@ func (s *Server) handleDidChange(ctx context.Context, _ jsonrpc2.Replier, req js
 		s.setDocumentContent(params.TextDocument.URI, lastChange.Text)
 	}
 
-	s.scheduleDiagnostics(params.TextDocument.URI)
+	// Diagnostics providers read the file from disk, so unsaved edits can't
+	// change their output; re-run on didSave/didChangeWatchedFiles instead.
 
 	return nil
 }

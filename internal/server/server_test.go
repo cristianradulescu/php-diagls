@@ -134,7 +134,7 @@ func TestServerHandle_MethodRouting(t *testing.T) {
 		{
 			method:      protocol.MethodTextDocumentDidChange,
 			handlerName: "handleDidChange",
-			description: "Updates cached content, schedules diagnostics",
+			description: "Updates cached content; diagnostics re-run on save, not on unsaved edits",
 		},
 		{
 			method:      protocol.MethodTextDocumentDidClose,
