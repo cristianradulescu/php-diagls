@@ -2,6 +2,7 @@ package utils_test
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -486,5 +487,36 @@ func TestIsPathExcluded(t *testing.T) {
 				t.Errorf("IsPathExcluded(%q, %v) = %v; expected %v", tt.relativePath, tt.excludePaths, result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"src/Foo.php", "'src/Foo.php'"},
+		{"src/My File.php", "'src/My File.php'"},
+		{"a$(b).php", "'a$(b).php'"},
+		{"it's.php", `'it'\''s.php'`},
+		{"", "''"},
+	}
+	for _, tt := range tests {
+		if got := utils.ShellQuote(tt.in); got != tt.want {
+			t.Errorf("ShellQuote(%q) = %s, want %s", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestShellQuote_RoundTripsThroughShell(t *testing.T) {
+	inputs := []string{"plain.php", "with space.php", "it's.php", "a$(echo x)`y`;z.php", `back\slash.php`}
+	for _, in := range inputs {
+		out, err := exec.Command("sh", "-c", "printf %s "+utils.ShellQuote(in)).Output()
+		if err != nil {
+			t.Fatalf("sh failed for %q: %v", in, err)
+		}
+		if string(out) != in {
+			t.Errorf("shell saw %q, want %q", out, in)
+		}
 	}
 }

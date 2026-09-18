@@ -54,12 +54,12 @@ func (dp *PhpStan) Analyze(ctx context.Context, filePath string) ([]protocol.Dia
 
 	configArg := ""
 	if dp.config.ConfigFile != "" {
-		configArg = fmt.Sprintf("--configuration=%s", dp.config.ConfigFile)
+		configArg = "--configuration=" + utils.ShellQuote(dp.config.ConfigFile)
 	}
 	result := container.RunCommandInContainer(
 		ctx,
 		dp.config.Container,
-		fmt.Sprintf("%s analyze %s --memory-limit=-1 --no-progress --error-format=json %s 2>/dev/null", dp.config.Path, relativeFilePath, configArg),
+		fmt.Sprintf("%s analyze %s --memory-limit=-1 --no-progress --error-format=json %s 2>/dev/null", utils.ShellQuote(dp.config.Path), utils.ShellQuote(relativeFilePath), configArg),
 	)
 
 	if result.Err != nil {

@@ -73,12 +73,12 @@ func (dp *PhpCsFixer) Analyze(ctx context.Context, filePath string) ([]protocol.
 
 	configArg := ""
 	if dp.config.ConfigFile != "" {
-		configArg = fmt.Sprintf("--config %s", dp.config.ConfigFile)
+		configArg = "--config " + utils.ShellQuote(dp.config.ConfigFile)
 	}
 	result := container.RunCommandInContainer(
 		ctx,
 		dp.config.Container,
-		fmt.Sprintf("%s fix %s --dry-run --diff --verbose --format json %s 2>/dev/null", dp.config.Path, relativeFilePath, configArg),
+		fmt.Sprintf("%s fix %s --dry-run --diff --verbose --format json %s 2>/dev/null", utils.ShellQuote(dp.config.Path), utils.ShellQuote(relativeFilePath), configArg),
 	)
 
 	if result.Err != nil {
@@ -148,7 +148,7 @@ func (dp *PhpCsFixer) analyzeRule(ctx context.Context, relativeFilePath string, 
 	ruleResult := container.RunCommandInContainer(
 		ctx,
 		dp.config.Container,
-		fmt.Sprintf("%s fix %s --dry-run --diff --verbose --format json --rules %s 2>/dev/null", dp.config.Path, relativeFilePath, rule),
+		fmt.Sprintf("%s fix %s --dry-run --diff --verbose --format json --rules %s 2>/dev/null", utils.ShellQuote(dp.config.Path), utils.ShellQuote(relativeFilePath), utils.ShellQuote(rule)),
 	)
 
 	if ruleResult.Err != nil {
@@ -265,7 +265,7 @@ func (dp *PhpCsFixer) explainRule(ctx context.Context, rule string) string {
 	result := container.RunCommandInContainer(
 		ctx,
 		dp.config.Container,
-		fmt.Sprintf("%s describe %s 2>/dev/null", dp.config.Path, rule),
+		fmt.Sprintf("%s describe %s 2>/dev/null", utils.ShellQuote(dp.config.Path), utils.ShellQuote(rule)),
 	)
 
 	fullRuleDescription := strings.TrimSpace(string(result.Stdout))
@@ -308,10 +308,10 @@ func (dp *PhpCsFixer) Format(ctx context.Context, filePath string, content strin
 
 	configArg := ""
 	if dp.config.ConfigFile != "" {
-		configArg = fmt.Sprintf("--config %s", dp.config.ConfigFile)
+		configArg = "--config " + utils.ShellQuote(dp.config.ConfigFile)
 	}
 
-	cmd := fmt.Sprintf("%s fix - --diff %s", dp.config.Path, configArg)
+	cmd := fmt.Sprintf("%s fix - --diff %s", utils.ShellQuote(dp.config.Path), configArg)
 
 	startTime := time.Now()
 	result := container.RunCommandInContainer(ctx, dp.config.Container, cmd, content)

@@ -51,7 +51,7 @@ func (dp *PhpLint) Analyze(ctx context.Context, filePath string) ([]protocol.Dia
 	result := container.RunCommandInContainer(
 		ctx,
 		dp.config.Container,
-		fmt.Sprintf("%s -l %s 2>&1", dp.config.Path, relativeFilePath),
+		fmt.Sprintf("%s -l %s 2>&1", utils.ShellQuote(dp.config.Path), utils.ShellQuote(relativeFilePath)),
 	)
 
 	output := string(result.Stdout)

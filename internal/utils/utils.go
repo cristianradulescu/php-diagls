@@ -207,3 +207,10 @@ func ApplyUnifiedDiff(originalContent, diff string) (string, error) {
 
 	return strings.Join(result, "\n"), nil
 }
+
+// ShellQuote returns s wrapped in single quotes so that a POSIX shell treats
+// it as one literal word, regardless of spaces or metacharacters in it.
+// Embedded single quotes are closed, escaped and reopened ('\'').
+func ShellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
