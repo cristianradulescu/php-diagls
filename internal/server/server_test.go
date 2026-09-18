@@ -1,483 +1,765 @@
-package server_test
+package server
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/cristianradulescu/php-diagls/internal/config"
+	"github.com/cristianradulescu/php-diagls/internal/diagnostics"
+	"github.com/cristianradulescu/php-diagls/internal/formatting"
+	"go.lsp.dev/jsonrpc2"
 	"go.lsp.dev/protocol"
 )
 
-// TestServerCapabilities tests the server capabilities configuration
+// ---- test doubles -----------------------------------------------------------
+
+type notification struct {
+	method string
+	params interface{}
+}
+
+// fakeConn records every notification the server sends to the client.
+type fakeConn struct {
+	mu     sync.Mutex
+	sent   []notification
+	closed bool
+	wake   chan struct{}
+}
+
+func newFakeConn() *fakeConn {
+	return &fakeConn{wake: make(chan struct{}, 64)}
+}
+
+func (c *fakeConn) Notify(_ context.Context, method string, params interface{}) error {
+	c.mu.Lock()
+	c.sent = append(c.sent, notification{method: method, params: params})
+	c.mu.Unlock()
+	select {
+	case c.wake <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func (c *fakeConn) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closed = true
+	return nil
+}
+
+func (c *fakeConn) notifications(method string) []notification {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []notification
+	for _, n := range c.sent {
+		if n.method == method {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// waitFor polls until cond holds or the deadline passes.
+func (c *fakeConn) waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		if cond() {
+			return
+		}
+		select {
+		case <-c.wake:
+		case <-time.After(10 * time.Millisecond):
+		case <-deadline:
+			t.Fatalf("condition not met within %v", timeout)
+		}
+	}
+}
+
+func (c *fakeConn) published(uri protocol.DocumentURI) []protocol.PublishDiagnosticsParams {
+	var out []protocol.PublishDiagnosticsParams
+	for _, n := range c.notifications(protocol.MethodTextDocumentPublishDiagnostics) {
+		p := n.params.(protocol.PublishDiagnosticsParams)
+		if p.URI == uri {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func (c *fakeConn) messages() []string {
+	var out []string
+	for _, n := range c.notifications(protocol.MethodWindowShowMessage) {
+		out = append(out, n.params.(*protocol.ShowMessageParams).Message)
+	}
+	return out
+}
+
+// fakeProvider is a scriptable DiagnosticsProvider.
+type fakeProvider struct {
+	id      string
+	analyze func(ctx context.Context, filePath string) ([]protocol.Diagnostic, error)
+}
+
+func (p *fakeProvider) Id() string   { return p.id }
+func (p *fakeProvider) Name() string { return p.id }
+func (p *fakeProvider) Analyze(ctx context.Context, filePath string) ([]protocol.Diagnostic, error) {
+	return p.analyze(ctx, filePath)
+}
+
+// fakeFormatter is a scriptable FormattingProvider.
+type fakeFormatter struct {
+	format func(ctx context.Context, filePath, content string) (string, error)
+}
+
+func (f *fakeFormatter) Id() string   { return "fake" }
+func (f *fakeFormatter) Name() string { return "fake" }
+func (f *fakeFormatter) Format(ctx context.Context, filePath, content string) (string, error) {
+	return f.format(ctx, filePath, content)
+}
+
+// reply captures a single jsonrpc2 reply.
+type reply struct {
+	mu     sync.Mutex
+	calls  int
+	result interface{}
+	err    error
+	done   chan struct{}
+}
+
+func newReply() *reply { return &reply{done: make(chan struct{}, 1)} }
+
+func (r *reply) fn(_ context.Context, result interface{}, err error) error {
+	r.mu.Lock()
+	r.calls++
+	r.result, r.err = result, err
+	r.mu.Unlock()
+	select {
+	case r.done <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func (r *reply) wait(t *testing.T) {
+	t.Helper()
+	select {
+	case <-r.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no reply within 5s")
+	}
+}
+
+func diag(line uint32, msg string) protocol.Diagnostic {
+	return protocol.Diagnostic{
+		Range:   protocol.Range{Start: protocol.Position{Line: line}, End: protocol.Position{Line: line}},
+		Message: msg,
+	}
+}
+
+// newTestServer returns a server with providers already "loaded" (so no
+// docker validation happens) and the given diagnostics providers installed.
+func newTestServer(t *testing.T, providers ...diagnostics.DiagnosticsProvider) (*Server, *fakeConn) {
+	t.Helper()
+	conn := newFakeConn()
+	s := New(conn)
+	s.exit = func(code int) { t.Fatalf("unexpected exit(%d)", code) }
+	if providers == nil {
+		providers = []diagnostics.DiagnosticsProvider{}
+	}
+	s.diagnosticsProviders = providers
+	s.formattingProviders = []formatting.FormattingProvider{}
+	return s, conn
+}
+
+func call(t *testing.T, s *Server, method string, params interface{}, r *reply) {
+	t.Helper()
+	raw, err := json.Marshal(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := jsonrpc2.NewCall(jsonrpc2.NewNumberID(1), method, json.RawMessage(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replier jsonrpc2.Replier
+	if r != nil {
+		replier = r.fn
+	} else {
+		replier = func(context.Context, interface{}, error) error { return nil }
+	}
+	if err := s.Handle(context.Background(), replier, req); err != nil {
+		t.Fatalf("Handle(%s) returned error: %v", method, err)
+	}
+}
+
+func notify(t *testing.T, s *Server, method string, params interface{}) {
+	t.Helper()
+	raw, err := json.Marshal(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := jsonrpc2.NewNotification(method, json.RawMessage(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Handle(context.Background(), func(context.Context, interface{}, error) error { return nil }, req); err != nil {
+		t.Fatalf("Handle(%s) returned error: %v", method, err)
+	}
+}
+
+func fileURI(dir, name string) protocol.DocumentURI {
+	return protocol.DocumentURI("file://" + filepath.Join(dir, name))
+}
+
+// ---- capabilities ------------------------------------------------------------
+
 func TestServerCapabilities(t *testing.T) {
-	t.Run("returns valid capabilities", func(t *testing.T) {
-		// We can't call serverCapabilities directly as it's not exported
-		// This test documents the expected capabilities structure
-		t.Log("Expected server capabilities:")
-		t.Log("- TextDocumentSync: Full sync with open/close/save")
-		t.Log("- ExecuteCommandProvider: Supports php-diagls/showConfig command")
-		t.Log("- DocumentFormattingProvider: true")
-	})
-}
-
-// TestServerInfo tests the server info configuration
-func TestServerInfo(t *testing.T) {
-	t.Run("documents expected server info", func(t *testing.T) {
-		// We can't call serverInfo directly as it's not exported
-		// This test documents the expected server info structure
-		t.Log("Expected server info:")
-		t.Log("- Name: php-diagls")
-		t.Log("- Version: from config.Version")
-	})
-}
-
-// TestGetFullLspCommandName tests command name formatting
-func TestGetFullLspCommandName(t *testing.T) {
-	t.Run("documents command name format", func(t *testing.T) {
-		// We can't call getFullLspCommandName directly as it's not exported
-		// This test documents the expected command name format
-		expectedFormat := "php-diagls/showConfig"
-		t.Logf("Expected command format: %s", expectedFormat)
-		t.Log("Format: <prefix>/<separator>/<command>")
-		t.Logf("- Prefix: %s", config.Name)
-		t.Log("- Separator: /")
-		t.Log("- Command: showConfig")
-	})
-}
-
-// TestServerConstants documents the server constants
-func TestServerConstants(t *testing.T) {
-	tests := []struct {
-		name     string
-		constant string
-		expected interface{}
-	}{
-		{
-			name:     "LspCommandPrefix",
-			constant: "LspCommandPrefix",
-			expected: "should equal config.Name (php-diagls)",
-		},
-		{
-			name:     "LspCommandSeparator",
-			constant: "LspCommandSeparator",
-			expected: "/",
-		},
-		{
-			name:     "LspCommandNameShowConfig",
-			constant: "LspCommandNameShowConfig",
-			expected: "showConfig",
-		},
+	caps := serverCapabilities()
+	if !caps.DocumentFormattingProvider.(bool) {
+		t.Error("formatting should be advertised")
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Logf("Constant %s: %v", tt.constant, tt.expected)
-		})
+	sync := caps.TextDocumentSync.(*protocol.TextDocumentSyncOptions)
+	if sync.Change != protocol.TextDocumentSyncKindFull || !sync.OpenClose || sync.Save == nil {
+		t.Errorf("unexpected sync options: %+v", sync)
+	}
+	cmds := caps.ExecuteCommandProvider.Commands
+	if len(cmds) != 1 || cmds[0] != "php-diagls/showConfig" {
+		t.Errorf("unexpected commands: %v", cmds)
+	}
+	if info := serverInfo(); info.Name != config.Name || info.Version != config.Version {
+		t.Errorf("unexpected server info: %+v", info)
 	}
 }
 
-// TestServerDebounceIntervals documents the debounce intervals
-func TestServerDebounceIntervals(t *testing.T) {
-	t.Run("diagnostics debounce interval", func(t *testing.T) {
-		t.Log("diagnosticsDebounceInterval: 300ms")
-		t.Log("Purpose: Prevents excessive diagnostics runs during rapid edits")
-		t.Log("Behavior: Last edit wins, previous pending diagnostics are cancelled")
-	})
+// ---- initialize -----------------------------------------------------------------
 
-	t.Run("formatting debounce interval", func(t *testing.T) {
-		t.Log("formattingDebounceInterval: 100ms")
-		t.Log("Purpose: Prevents excessive formatting calls")
-		t.Log("Behavior: Last request wins, previous pending formatting is cancelled")
-	})
+func writeConfig(t *testing.T, dir string) {
+	t.Helper()
+	cfg := `{"diagnosticsProviders":{"phplint":{"enabled":false,"container":"c","path":"/usr/bin/php"}}}`
+	if err := os.WriteFile(filepath.Join(dir, config.ConfigFileName), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
-// TestServer_New tests server creation
-func TestServer_New(t *testing.T) {
-	// Can't easily test New() without a mock jsonrpc2.Conn
-	// This documents what New() should initialize
-	t.Log("Server.New() should initialize:")
-	t.Log("- conn: jsonrpc2.Conn")
-	t.Log("- serverConfig: empty config.Config")
-	t.Log("- documents: empty map")
-	t.Log("- diagTimers: empty map")
-	t.Log("- diagGen: empty map")
-	t.Log("- fmtTimers: empty map")
-	t.Log("- fmtGen: empty map")
+func TestInitialize_LoadsConfigFromWorkspaceFolder(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(t, dir)
+	conn := newFakeConn()
+	s := New(conn)
+	s.exit = func(code int) { t.Fatalf("unexpected exit(%d)", code) }
+
+	r := newReply()
+	call(t, s, protocol.MethodInitialize, protocol.InitializeParams{
+		WorkspaceFolders: []protocol.WorkspaceFolder{{URI: "file://" + dir}},
+	}, r)
+
+	if r.calls != 1 || r.err != nil {
+		t.Fatalf("expected one successful reply, got calls=%d err=%v", r.calls, r.err)
+	}
+	if _, ok := r.result.(protocol.InitializeResult); !ok {
+		t.Fatalf("unexpected result type %T", r.result)
+	}
+	if !s.serverConfig.IsInitialized() {
+		t.Error("config should be initialized")
+	}
+	if len(s.diagnosticsProviders) != 0 {
+		t.Errorf("disabled provider should not be loaded, got %d", len(s.diagnosticsProviders))
+	}
 }
 
-// TestServerHandle_MethodRouting documents the Handle method routing
-func TestServerHandle_MethodRouting(t *testing.T) {
-	tests := []struct {
-		method      string
-		handlerName string
-		description string
-	}{
-		{
-			method:      protocol.MethodInitialize,
-			handlerName: "handleInitialize",
-			description: "Loads config, initializes providers, returns capabilities",
-		},
-		{
-			method:      protocol.MethodInitialized,
-			handlerName: "handleInitialized",
-			description: "Acknowledges initialization complete",
-		},
-		{
-			method:      protocol.MethodWorkspaceExecuteCommand,
-			handlerName: "handleExecuteCommand",
-			description: "Executes custom commands (showConfig)",
-		},
-		{
-			method:      protocol.MethodTextDocumentDidOpen,
-			handlerName: "handleDidOpen",
-			description: "Caches document content, schedules diagnostics",
-		},
-		{
-			method:      protocol.MethodTextDocumentDidChange,
-			handlerName: "handleDidChange",
-			description: "Updates cached content; diagnostics re-run on save, not on unsaved edits",
-		},
-		{
-			method:      protocol.MethodTextDocumentDidClose,
-			handlerName: "handleDidClose",
-			description: "Removes cached content, publishes empty diagnostics directly",
-		},
-		{
-			method:      protocol.MethodTextDocumentDidSave,
-			handlerName: "handleDidSave",
-			description: "Updates cached content, schedules priority diagnostics",
-		},
-		{
-			method:      protocol.MethodTextDocumentFormatting,
-			handlerName: "handleDocumentFormatting",
-			description: "Schedules document formatting with debounce",
-		},
-		{
-			method:      protocol.MethodWorkspaceDidChangeWatchedFiles,
-			handlerName: "handleDidChangeWatchedFiles",
-			description: "Handles file system changes for .php files",
-		},
-		{
-			method:      protocol.MethodShutdown,
-			handlerName: "handleShutdown",
-			description: "Prepares for shutdown",
-		},
-		{
-			method:      protocol.MethodExit,
-			handlerName: "handleExit",
-			description: "Closes connection and exits",
-		},
+func TestInitialize_DecodesPercentEncodedRoot(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "my project")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeConfig(t, dir)
+	s := New(newFakeConn())
+	s.exit = func(code int) { t.Fatalf("unexpected exit(%d): root with a space was not decoded", code) }
+
+	call(t, s, protocol.MethodInitialize, protocol.InitializeParams{
+		RootURI: protocol.DocumentURI("file://" + strings.ReplaceAll(dir, " ", "%20")),
+	}, newReply())
+
+	if !s.serverConfig.IsInitialized() {
+		t.Error("config should be initialized")
+	}
+}
+
+func TestInitialize_MissingConfigExits(t *testing.T) {
+	s := New(newFakeConn())
+	exited := -1
+	s.exit = func(code int) { exited = code }
+
+	r := newReply()
+	call(t, s, protocol.MethodInitialize, protocol.InitializeParams{RootURI: protocol.DocumentURI("file://" + t.TempDir())}, r)
+
+	if exited != 0 {
+		t.Errorf("expected exit(0), got %d", exited)
+	}
+	if r.err == nil {
+		t.Error("expected an error reply when config is missing")
+	}
+}
+
+// ---- document lifecycle -------------------------------------------------------
+
+func TestDidOpen_CachesContentAndPublishesDiagnostics(t *testing.T) {
+	dir := t.TempDir()
+	uri := fileURI(dir, "a.php")
+	var mu sync.Mutex
+	var seenPath string
+	s, conn := newTestServer(t, &fakeProvider{id: "p", analyze: func(_ context.Context, path string) ([]protocol.Diagnostic, error) {
+		mu.Lock()
+		seenPath = path
+		mu.Unlock()
+		return []protocol.Diagnostic{diag(3, "boom")}, nil
+	}})
+
+	notify(t, s, protocol.MethodTextDocumentDidOpen, protocol.DidOpenTextDocumentParams{
+		TextDocument: protocol.TextDocumentItem{URI: uri, Text: "<?php\n"},
+	})
+
+	if content, ok := s.getDocumentContent(uri); !ok || content != "<?php\n" {
+		t.Errorf("content not cached: %q %v", content, ok)
+	}
+	conn.waitFor(t, 3*time.Second, func() bool { return len(conn.published(uri)) == 1 })
+	got := conn.published(uri)[0]
+	if len(got.Diagnostics) != 1 || got.Diagnostics[0].Message != "boom" {
+		t.Errorf("unexpected diagnostics: %+v", got.Diagnostics)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if seenPath != filepath.Join(dir, "a.php") {
+		t.Errorf("provider got path %q", seenPath)
+	}
+}
+
+func TestScheduleDiagnostics_DebouncesToSingleRun(t *testing.T) {
+	uri := fileURI(t.TempDir(), "a.php")
+	var mu sync.Mutex
+	runs := 0
+	s, conn := newTestServer(t, &fakeProvider{id: "p", analyze: func(context.Context, string) ([]protocol.Diagnostic, error) {
+		mu.Lock()
+		runs++
+		mu.Unlock()
+		return nil, nil
+	}})
+
+	for i := 0; i < 5; i++ {
+		s.scheduleDiagnostics(uri)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.method, func(t *testing.T) {
-			t.Logf("Method: %s", tt.method)
-			t.Logf("Handler: %s", tt.handlerName)
-			t.Logf("Description: %s", tt.description)
-		})
+	conn.waitFor(t, 3*time.Second, func() bool { return len(conn.published(uri)) == 1 })
+	time.Sleep(2 * diagnosticsDebounceInterval)
+	mu.Lock()
+	defer mu.Unlock()
+	if runs != 1 {
+		t.Errorf("expected exactly one analysis, got %d", runs)
+	}
+	if len(conn.published(uri)) != 1 {
+		t.Errorf("expected exactly one publish, got %d", len(conn.published(uri)))
+	}
+}
+
+func TestDidSave_RunsImmediatelyAndSupersedesDebounced(t *testing.T) {
+	uri := fileURI(t.TempDir(), "a.php")
+	s, conn := newTestServer(t, &fakeProvider{id: "p", analyze: func(context.Context, string) ([]protocol.Diagnostic, error) {
+		return []protocol.Diagnostic{diag(0, "x")}, nil
+	}})
+
+	s.scheduleDiagnostics(uri)
+	start := time.Now()
+	notify(t, s, protocol.MethodTextDocumentDidSave, protocol.DidSaveTextDocumentParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: uri},
+	})
+
+	conn.waitFor(t, 3*time.Second, func() bool { return len(conn.published(uri)) >= 1 })
+	if time.Since(start) >= diagnosticsDebounceInterval {
+		t.Error("save path should not wait for the debounce interval")
+	}
+	// The pending debounced timer was stopped, so no second publish follows.
+	time.Sleep(2 * diagnosticsDebounceInterval)
+	if n := len(conn.published(uri)); n != 1 {
+		t.Errorf("expected 1 publish, got %d", n)
+	}
+}
+
+func TestStaleGenerationIsDiscarded(t *testing.T) {
+	uri := fileURI(t.TempDir(), "a.php")
+	release := make(chan struct{})
+	var mu sync.Mutex
+	calls := 0
+	s, conn := newTestServer(t, &fakeProvider{id: "p", analyze: func(ctx context.Context, _ string) ([]protocol.Diagnostic, error) {
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		if n == 1 {
+			// First run blocks until the second one has been scheduled.
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+			return []protocol.Diagnostic{diag(0, "stale")}, nil
+		}
+		return []protocol.Diagnostic{diag(0, "fresh")}, nil
+	}})
+
+	s.scheduleDiagnosticsPriority(uri)
+	conn.waitFor(t, 3*time.Second, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
+	s.scheduleDiagnosticsPriority(uri) // cancels run 1's context, bumps generation
+	close(release)
+
+	conn.waitFor(t, 3*time.Second, func() bool { return len(conn.published(uri)) >= 1 })
+	time.Sleep(100 * time.Millisecond)
+	pubs := conn.published(uri)
+	if len(pubs) != 1 || pubs[0].Diagnostics[0].Message != "fresh" {
+		t.Errorf("expected only the fresh result, got %+v", pubs)
+	}
+}
+
+func TestDidClose_ClearsStateAndDiagnostics(t *testing.T) {
+	uri := fileURI(t.TempDir(), "a.php")
+	s, conn := newTestServer(t, &fakeProvider{id: "p", analyze: func(ctx context.Context, _ string) ([]protocol.Diagnostic, error) {
+		<-ctx.Done()
+		return []protocol.Diagnostic{diag(0, "late")}, nil
+	}})
+
+	s.setDocumentContent(uri, "<?php")
+	s.scheduleDiagnosticsPriority(uri)
+	s.scheduleDiagnostics(uri)
+	notify(t, s, protocol.MethodTextDocumentDidClose, protocol.DidCloseTextDocumentParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: uri},
+	})
+
+	if _, ok := s.getDocumentContent(uri); ok {
+		t.Error("document content should be dropped on close")
+	}
+	pubs := conn.published(uri)
+	if len(pubs) != 1 || len(pubs[0].Diagnostics) != 0 {
+		t.Fatalf("expected one empty publish on close, got %+v", pubs)
+	}
+	time.Sleep(2 * diagnosticsDebounceInterval)
+	if n := len(conn.published(uri)); n != 1 {
+		t.Errorf("in-flight/pending analyses must not publish after close, got %d publishes", n)
+	}
+	s.diagMu.Lock()
+	_, hasTimer := s.diagTimers[uri]
+	_, hasGen := s.diagGen[uri]
+	_, hasCancel := s.diagCancel[uri]
+	s.diagMu.Unlock()
+	if hasTimer || hasGen || hasCancel {
+		t.Errorf("per-URI state should be cleaned up: timer=%v gen=%v cancel=%v", hasTimer, hasGen, hasCancel)
+	}
+}
+
+func TestDidChange_UpdatesCacheWithoutAnalysis(t *testing.T) {
+	uri := fileURI(t.TempDir(), "a.php")
+	s, conn := newTestServer(t, &fakeProvider{id: "p", analyze: func(context.Context, string) ([]protocol.Diagnostic, error) {
+		t.Error("didChange must not trigger analysis")
+		return nil, nil
+	}})
+
+	notify(t, s, protocol.MethodTextDocumentDidChange, protocol.DidChangeTextDocumentParams{
+		TextDocument:   protocol.VersionedTextDocumentIdentifier{TextDocumentIdentifier: protocol.TextDocumentIdentifier{URI: uri}},
+		ContentChanges: []protocol.TextDocumentContentChangeEvent{{Text: "v1"}, {Text: "v2"}},
+	})
+
+	if content, _ := s.getDocumentContent(uri); content != "v2" {
+		t.Errorf("expected last change to win, got %q", content)
+	}
+	time.Sleep(2 * diagnosticsDebounceInterval)
+	if len(conn.published(uri)) != 0 {
+		t.Error("no diagnostics expected on didChange")
+	}
+}
+
+func TestDidChangeWatchedFiles(t *testing.T) {
+	dir := t.TempDir()
+	changed, deleted, other := fileURI(dir, "c.php"), fileURI(dir, "d.php"), fileURI(dir, "x.txt")
+	s, conn := newTestServer(t, &fakeProvider{id: "p", analyze: func(_ context.Context, path string) ([]protocol.Diagnostic, error) {
+		return []protocol.Diagnostic{diag(0, filepath.Base(path))}, nil
+	}})
+
+	notify(t, s, protocol.MethodWorkspaceDidChangeWatchedFiles, protocol.DidChangeWatchedFilesParams{
+		Changes: []*protocol.FileEvent{
+			{URI: changed, Type: protocol.FileChangeTypeChanged},
+			{URI: deleted, Type: protocol.FileChangeTypeDeleted},
+			{URI: other, Type: protocol.FileChangeTypeChanged},
+		},
+	})
+
+	conn.waitFor(t, 3*time.Second, func() bool { return len(conn.published(changed)) == 1 })
+	if len(conn.published(deleted)) != 1 || len(conn.published(deleted)[0].Diagnostics) != 0 {
+		t.Error("deleted file should get an empty publish")
+	}
+	time.Sleep(2 * diagnosticsDebounceInterval)
+	if len(conn.published(other)) != 0 {
+		t.Error("non-PHP files should be ignored")
+	}
+}
+
+// ---- collectDiagnostics ---------------------------------------------------------
+
+func TestCollectDiagnostics_MergesProvidersAndReportsErrors(t *testing.T) {
+	s, conn := newTestServer(t,
+		&fakeProvider{id: "ok", analyze: func(context.Context, string) ([]protocol.Diagnostic, error) {
+			return []protocol.Diagnostic{diag(1, "one")}, nil
+		}},
+		&fakeProvider{id: "partial", analyze: func(context.Context, string) ([]protocol.Diagnostic, error) {
+			return []protocol.Diagnostic{diag(2, "two")}, errors.New("config broken")
+		}},
+	)
+
+	diags := s.collectDiagnostics(context.Background(), "/p/src/a.php")
+
+	if len(diags) != 2 {
+		t.Errorf("partial results should be kept, got %d diagnostics", len(diags))
+	}
+	msgs := conn.messages()
+	if len(msgs) != 1 || !strings.Contains(msgs[0], "partial") || !strings.Contains(msgs[0], "config broken") {
+		t.Errorf("expected one error message naming the provider, got %v", msgs)
+	}
+}
+
+func TestCollectDiagnostics_SilentOnCancellation(t *testing.T) {
+	s, conn := newTestServer(t, &fakeProvider{id: "p", analyze: func(ctx context.Context, _ string) ([]protocol.Diagnostic, error) {
+		return nil, ctx.Err()
+	}})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	s.collectDiagnostics(ctx, "/p/src/a.php")
+
+	if msgs := conn.messages(); len(msgs) != 0 {
+		t.Errorf("cancelled runs must not nag the user, got %v", msgs)
+	}
+}
+
+func TestCollectDiagnostics_SkipsIgnoredDirs(t *testing.T) {
+	s, _ := newTestServer(t, &fakeProvider{id: "p", analyze: func(context.Context, string) ([]protocol.Diagnostic, error) {
+		t.Error("provider should not run for ignored paths")
+		return nil, nil
+	}})
+	for _, p := range []string{"/p/vendor/x.php", "/p/var/cache/y.php"} {
+		if got := s.collectDiagnostics(context.Background(), p); len(got) != 0 {
+			t.Errorf("%s: expected no diagnostics", p)
+		}
+	}
+}
+
+func TestRunDiagnostics_BoundedConcurrency(t *testing.T) {
+	dir := t.TempDir()
+	var mu sync.Mutex
+	running, peak := 0, 0
+	s, conn := newTestServer(t, &fakeProvider{id: "p", analyze: func(context.Context, string) ([]protocol.Diagnostic, error) {
+		mu.Lock()
+		running++
+		if running > peak {
+			peak = running
+		}
+		mu.Unlock()
+		time.Sleep(30 * time.Millisecond)
+		mu.Lock()
+		running--
+		mu.Unlock()
+		return nil, nil
+	}})
+
+	const files = 12
+	for i := 0; i < files; i++ {
+		s.scheduleDiagnosticsPriority(fileURI(dir, "f"+string(rune('a'+i))+".php"))
 	}
 
-	t.Run("unhandled methods", func(t *testing.T) {
-		t.Log("Unhandled methods return reply(ctx, nil, nil)")
-		t.Log("Server logs warning for unhandled methods")
+	conn.waitFor(t, 5*time.Second, func() bool {
+		return len(conn.notifications(protocol.MethodTextDocumentPublishDiagnostics)) == files
 	})
+	mu.Lock()
+	defer mu.Unlock()
+	if peak > maxConcurrentAnalyses {
+		t.Errorf("peak concurrency %d exceeds cap %d", peak, maxConcurrentAnalyses)
+	}
+	if peak < 2 {
+		t.Errorf("expected some parallelism, peak was %d", peak)
+	}
 }
 
-// TestServerDocumentManagement documents document cache behavior
-func TestServerDocumentManagement(t *testing.T) {
-	t.Run("setDocumentContent", func(t *testing.T) {
-		t.Log("Stores document content in memory cache")
-		t.Log("Protected by RWMutex (s.docMu)")
-		t.Log("Used for synchronized document content from client")
-	})
+// ---- formatting -------------------------------------------------------------------
 
-	t.Run("getDocumentContent", func(t *testing.T) {
-		t.Log("Retrieves document content from cache")
-		t.Log("Returns (content string, exists bool)")
-		t.Log("Protected by RWMutex (s.docMu) for concurrent reads")
-	})
-
-	t.Run("deleteDocumentContent", func(t *testing.T) {
-		t.Log("Removes document from cache when closed")
-		t.Log("Protected by RWMutex (s.docMu)")
-	})
+func formatParams(uri protocol.DocumentURI) protocol.DocumentFormattingParams {
+	return protocol.DocumentFormattingParams{TextDocument: protocol.TextDocumentIdentifier{URI: uri}}
 }
 
-// TestServerDiagnosticsScheduling documents diagnostics scheduling behavior
-func TestServerDiagnosticsScheduling(t *testing.T) {
-	t.Run("scheduleDiagnostics", func(t *testing.T) {
-		t.Log("Schedules diagnostics with 300ms debounce")
-		t.Log("Cancels previous timer if exists (last-wins strategy)")
-		t.Log("Increments generation counter for race prevention")
-		t.Log("Runs collectDiagnostics in timer callback")
-		t.Log("Checks generation before publishing (prevents stale results)")
-	})
+func TestFormatting_NoProvidersRepliesEmpty(t *testing.T) {
+	uri := fileURI(t.TempDir(), "a.php")
+	s, _ := newTestServer(t)
+	s.setDocumentContent(uri, "<?php")
 
-	t.Run("scheduleDiagnosticsPriority", func(t *testing.T) {
-		t.Log("Immediately runs diagnostics without debounce")
-		t.Log("Used for save events (DidSave)")
-		t.Log("Runs in goroutine for async execution")
-		t.Log("Still uses generation counter for race prevention")
-	})
+	r := newReply()
+	call(t, s, protocol.MethodTextDocumentFormatting, formatParams(uri), r)
+	r.wait(t)
 
-	t.Run("generation counter behavior", func(t *testing.T) {
-		t.Log("Per-file generation counter (diagGen map)")
-		t.Log("Incremented on each schedule call")
-		t.Log("Prevents publishing stale results from earlier requests")
-		t.Log("Example: Edit 1 (gen=1) -> Edit 2 (gen=2)")
-		t.Log("  If gen=1 completes after gen=2 starts, result is discarded")
-	})
+	if edits, ok := r.result.([]protocol.TextEdit); !ok || len(edits) != 0 || r.err != nil {
+		t.Errorf("expected empty edits, got %+v err=%v", r.result, r.err)
+	}
 }
 
-// TestServerFormattingScheduling documents formatting scheduling behavior
-func TestServerFormattingScheduling(t *testing.T) {
-	t.Run("scheduleFormatting", func(t *testing.T) {
-		t.Log("Schedules formatting with 100ms debounce")
-		t.Log("Cancels previous timer if exists (last-wins strategy)")
-		t.Log("Increments generation counter for race prevention")
-		t.Log("Checks generation before replying (prevents stale results)")
-	})
+func TestFormatting_UsesCachedContentAndRepliesWithEdit(t *testing.T) {
+	uri := fileURI(t.TempDir(), "a.php")
+	s, _ := newTestServer(t)
+	s.formattingProviders = []formatting.FormattingProvider{&fakeFormatter{format: func(_ context.Context, _ string, content string) (string, error) {
+		return strings.ReplaceAll(content, "array()", "[]"), nil
+	}}}
+	s.setDocumentContent(uri, "<?php\n$a = array();\n")
 
-	t.Run("formatting behavior", func(t *testing.T) {
-		t.Log("1. Gets content from cache or reads from file")
-		t.Log("2. Loads formatting providers (cached)")
-		t.Log("3. Uses first provider only")
-		t.Log("4. Calls provider.Format(ctx, filePath, content)")
-		t.Log("5. If no changes, returns empty TextEdit array")
-		t.Log("6. If changed, returns TextEdit replacing entire document")
-	})
+	r := newReply()
+	call(t, s, protocol.MethodTextDocumentFormatting, formatParams(uri), r)
+	r.wait(t)
 
-	t.Run("text edit calculation", func(t *testing.T) {
-		t.Log("Replaces entire document content:")
-		t.Log("  Start: Line 0, Character 0")
-		t.Log("  End: Last line, last character")
-		t.Log("  NewText: formatted content")
-	})
+	edits := r.result.([]protocol.TextEdit)
+	if len(edits) != 1 || edits[0].NewText != "<?php\n$a = [];\n" {
+		t.Errorf("unexpected edits: %+v", edits)
+	}
 }
 
-// TestServerProviderLoading documents provider loading behavior
-func TestServerProviderLoading(t *testing.T) {
-	t.Run("loadDiagnosticsProviders", func(t *testing.T) {
-		t.Log("Loads and caches diagnostics providers")
-		t.Log("Called once during handleInitialize")
-		t.Log("Returns cached providers on subsequent calls")
-		t.Log("Skips disabled providers")
-		t.Log("Shows error message window if provider creation fails")
-	})
+func TestFormatting_ReadsFromDiskWhenNotOpen(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.php"), []byte("on disk"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var seen string
+	s, _ := newTestServer(t)
+	s.formattingProviders = []formatting.FormattingProvider{&fakeFormatter{format: func(_ context.Context, _ string, content string) (string, error) {
+		mu.Lock()
+		seen = content
+		mu.Unlock()
+		return content, nil
+	}}}
 
-	t.Run("loadFormattingProviders", func(t *testing.T) {
-		t.Log("Loads and caches formatting providers")
-		t.Log("Called once during handleInitialize")
-		t.Log("Returns cached providers on subsequent calls")
-		t.Log("Uses formatting.LoadFormattingProviders()")
-	})
+	r := newReply()
+	call(t, s, protocol.MethodTextDocumentFormatting, formatParams(fileURI(dir, "a.php")), r)
+	r.wait(t)
 
-	t.Run("provider caching", func(t *testing.T) {
-		t.Log("Providers are loaded once and cached in Server struct")
-		t.Log("diagnosticsProviders: []diagnostics.DiagnosticsProvider")
-		t.Log("formattingProviders: []formatting.FormattingProvider")
-		t.Log("Cache check: if providers != nil, return cached")
-	})
+	mu.Lock()
+	defer mu.Unlock()
+	if seen != "on disk" {
+		t.Errorf("expected disk content, provider saw %q", seen)
+	}
 }
 
-// TestServerCollectDiagnostics documents diagnostics collection behavior
-func TestServerCollectDiagnostics(t *testing.T) {
-	t.Run("ignored directories", func(t *testing.T) {
-		t.Log("Ignores files in: /vendor/, /var/cache/")
-		t.Log("Returns empty diagnostics slice for ignored paths")
-	})
+func TestFormatting_MissingFileRepliesError(t *testing.T) {
+	s, _ := newTestServer(t)
+	s.formattingProviders = []formatting.FormattingProvider{&fakeFormatter{format: func(_ context.Context, _ string, c string) (string, error) { return c, nil }}}
 
-	t.Run("parallel execution", func(t *testing.T) {
-		t.Log("Runs all providers in parallel using goroutines")
-		t.Log("Uses sync.WaitGroup to wait for all providers")
-		t.Log("Uses sync.Mutex to protect diagnostics slice")
-	})
+	r := newReply()
+	call(t, s, protocol.MethodTextDocumentFormatting, formatParams(fileURI(t.TempDir(), "missing.php")), r)
+	r.wait(t)
 
-	t.Run("error handling", func(t *testing.T) {
-		t.Log("Shows error window message if provider fails")
-		t.Log("Continues with other providers on error")
-		t.Log("Returns combined diagnostics from all successful providers")
-	})
+	if r.err == nil {
+		t.Error("expected an error reply for an unreadable file")
+	}
 }
 
-// TestServerMessageHandling documents message handling behavior
-func TestServerMessageHandling(t *testing.T) {
-	t.Run("showWindowMessage", func(t *testing.T) {
-		t.Log("Sends window/showMessage notification to client")
-		t.Log("Used for errors and info messages")
-		t.Log("Logs error if notification fails")
-	})
+func TestFormatting_ProviderErrorRepliesEmpty(t *testing.T) {
+	uri := fileURI(t.TempDir(), "a.php")
+	s, _ := newTestServer(t)
+	s.formattingProviders = []formatting.FormattingProvider{&fakeFormatter{format: func(context.Context, string, string) (string, error) {
+		return "", errors.New("php-cs-fixer exploded")
+	}}}
+	s.setDocumentContent(uri, "<?php")
 
-	t.Run("publishDiagnostics", func(t *testing.T) {
-		t.Log("Sends textDocument/publishDiagnostics notification")
-		t.Log("Uses utils.EnsureDiagnosticsArray() to ensure array (not null)")
-		t.Log("Logs error if notification fails")
-	})
+	r := newReply()
+	call(t, s, protocol.MethodTextDocumentFormatting, formatParams(uri), r)
+	r.wait(t)
+
+	if edits, ok := r.result.([]protocol.TextEdit); !ok || len(edits) != 0 || r.err != nil {
+		t.Errorf("formatter failure should yield no edits and no error, got %+v err=%v", r.result, r.err)
+	}
 }
 
-// TestServerInitialization documents initialization behavior
-func TestServerInitialization(t *testing.T) {
-	t.Run("project root detection", func(t *testing.T) {
-		t.Log("Priority order:")
-		t.Log("1. WorkspaceFolders[0].URI")
-		t.Log("2. RootURI (deprecated)")
-		t.Log("3. os.Getwd() fallback")
-	})
+func TestFormatting_ConcurrentRequestsEachGetOneReply(t *testing.T) {
+	uri := fileURI(t.TempDir(), "a.php")
+	s, _ := newTestServer(t)
+	s.formattingProviders = []formatting.FormattingProvider{&fakeFormatter{format: func(_ context.Context, _ string, content string) (string, error) {
+		time.Sleep(20 * time.Millisecond)
+		return content + "\n", nil
+	}}}
+	s.setDocumentContent(uri, "<?php")
 
-	t.Run("config loading", func(t *testing.T) {
-		t.Log("Loads config using projectRoot")
-		t.Log("CRITICAL-002: Calls os.Exit(0) if config not found")
-		t.Log("This makes the function untestable")
-		t.Log("Should return error instead of calling os.Exit()")
-	})
-
-	t.Run("provider preloading", func(t *testing.T) {
-		t.Log("Preloads diagnostics providers during init")
-		t.Log("Preloads formatting providers during init")
-		t.Log("Discards return value (providers are cached)")
-	})
+	replies := []*reply{newReply(), newReply(), newReply()}
+	for _, r := range replies {
+		call(t, s, protocol.MethodTextDocumentFormatting, formatParams(uri), r)
+	}
+	for i, r := range replies {
+		r.wait(t)
+		r.mu.Lock()
+		if r.calls != 1 {
+			t.Errorf("request %d replied %d times, want exactly 1", i, r.calls)
+		}
+		r.mu.Unlock()
+	}
 }
 
-// TestServerCriticalIssues documents known critical issues
-func TestServerCriticalIssues(t *testing.T) {
-	t.Run("CRITICAL-002: os.Exit in handleInitialize", func(t *testing.T) {
-		t.Log("Location: server.go:127")
-		t.Log("Issue: os.Exit(0) makes function untestable")
-		t.Log("Impact: Cannot test initialization error path")
-		t.Log("Impact: Prevents graceful error handling in tests")
-		t.Log("Recommendation: Return error instead of os.Exit()")
-		t.Log("Alternative: Use dependency injection for exit function")
-	})
+// ---- misc handlers ----------------------------------------------------------------
 
-	t.Run("async operations make testing difficult", func(t *testing.T) {
-		t.Log("time.AfterFunc() in scheduling makes tests race-prone")
-		t.Log("Goroutines in collectDiagnostics require careful synchronization")
-		t.Log("Generation counters add complexity to testing")
-		t.Log("Would benefit from time abstraction/dependency injection")
-	})
+func TestExecuteCommand(t *testing.T) {
+	s, conn := newTestServer(t)
+	s.serverConfig.RawData = json.RawMessage(`{"diagnosticsProviders":{}}`)
 
-	t.Run("jsonrpc2.Conn dependency", func(t *testing.T) {
-		t.Log("Most methods require mock jsonrpc2.Conn")
-		t.Log("Conn interface is complex (Notify, Close methods)")
-		t.Log("Would benefit from interface wrapper for testing")
-	})
+	r := newReply()
+	call(t, s, protocol.MethodWorkspaceExecuteCommand, protocol.ExecuteCommandParams{Command: "php-diagls/showConfig"}, r)
+	if r.calls != 1 || r.err != nil {
+		t.Errorf("showConfig should reply cleanly, got calls=%d err=%v", r.calls, r.err)
+	}
+	if msgs := conn.messages(); len(msgs) != 1 || !strings.Contains(msgs[0], `"diagnosticsProviders"`) {
+		t.Errorf("expected the raw config in a window message, got %v", msgs)
+	}
+
+	r = newReply()
+	call(t, s, protocol.MethodWorkspaceExecuteCommand, protocol.ExecuteCommandParams{Command: "php-diagls/nope"}, r)
+	if r.err == nil {
+		t.Error("unknown command should reply with an error")
+	}
 }
 
-// TestServerFileWatcherBehavior documents file watcher behavior
-func TestServerFileWatcherBehavior(t *testing.T) {
-	t.Run("file change types", func(t *testing.T) {
-		t.Log("FileChangeTypeChanged: Schedules diagnostics")
-		t.Log("FileChangeTypeCreated: Schedules diagnostics")
-		t.Log("FileChangeTypeDeleted: Publishes empty diagnostics (clears)")
-	})
-
-	t.Run("file filtering", func(t *testing.T) {
-		t.Log("Only processes files ending with .php")
-		t.Log("Ignores non-PHP files")
-	})
+func TestUnknownMethodIsAcknowledged(t *testing.T) {
+	s, _ := newTestServer(t)
+	r := newReply()
+	call(t, s, "some/unknownMethod", struct{}{}, r)
+	if r.calls != 1 || r.err != nil {
+		t.Errorf("expected a nil reply, got calls=%d err=%v", r.calls, r.err)
+	}
 }
 
-// TestServerExecuteCommand documents command execution behavior
-func TestServerExecuteCommand(t *testing.T) {
-	t.Run("showConfig command", func(t *testing.T) {
-		t.Log("Command: php-diagls/showConfig")
-		t.Log("Shows window message with current config raw data")
-		t.Log("Returns nil result")
-	})
-
-	t.Run("unknown commands", func(t *testing.T) {
-		t.Log("Returns error: 'unknown command: <name>'")
-		t.Log("Error is sent as reply to client")
-	})
+func TestShutdownAndExit(t *testing.T) {
+	s, conn := newTestServer(t)
+	r := newReply()
+	call(t, s, protocol.MethodShutdown, struct{}{}, r)
+	if r.calls != 1 || r.err != nil {
+		t.Errorf("shutdown should reply, got calls=%d err=%v", r.calls, r.err)
+	}
+	notify(t, s, protocol.MethodExit, struct{}{})
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if !conn.closed {
+		t.Error("exit should close the connection")
+	}
 }
 
-// TestServerShutdownBehavior documents shutdown behavior
-func TestServerShutdownBehavior(t *testing.T) {
-	t.Run("shutdown method", func(t *testing.T) {
-		t.Log("Logs cleanup message")
-		t.Log("Returns nil (acknowledges shutdown request)")
-		t.Log("Does not actually close connection")
-	})
-
-	t.Run("exit method", func(t *testing.T) {
-		t.Log("Logs exit message")
-		t.Log("Calls conn.Close() to close connection")
-		t.Log("Returns error from Close() if any")
-	})
-
-	t.Run("LSP shutdown sequence", func(t *testing.T) {
-		t.Log("1. Client sends shutdown request")
-		t.Log("2. Server handles shutdown, returns response")
-		t.Log("3. Client sends exit notification")
-		t.Log("4. Server handles exit, closes connection")
-	})
-}
-
-// TestServerConcurrencySafety documents concurrency safety measures
-func TestServerConcurrencySafety(t *testing.T) {
-	t.Run("document cache", func(t *testing.T) {
-		t.Log("Protected by sync.RWMutex (docMu)")
-		t.Log("Allows multiple concurrent reads")
-		t.Log("Exclusive write access")
-	})
-
-	t.Run("diagnostics scheduling", func(t *testing.T) {
-		t.Log("Protected by sync.Mutex (diagMu)")
-		t.Log("Guards diagTimers and diagGen maps")
-		t.Log("Prevents race conditions in timer management")
-	})
-
-	t.Run("formatting scheduling", func(t *testing.T) {
-		t.Log("Protected by sync.Mutex (fmtMu)")
-		t.Log("Guards fmtTimers and fmtGen maps")
-		t.Log("Prevents race conditions in timer management")
-	})
-
-	t.Run("diagnostics collection", func(t *testing.T) {
-		t.Log("Uses sync.WaitGroup for goroutine coordination")
-		t.Log("Uses sync.Mutex for diagnostics slice protection")
-		t.Log("Allows parallel provider execution")
-	})
-}
-
-// TestServerTestability documents testability challenges and solutions
-func TestServerTestability(t *testing.T) {
-	t.Run("what can be tested", func(t *testing.T) {
-		t.Log("✓ Constants and configuration")
-		t.Log("✓ Document cache operations (with mock connection)")
-		t.Log("✓ Provider loading logic (with test config)")
-		t.Log("✓ Ignored directory filtering")
-		t.Log("✓ Error handling paths")
-	})
-
-	t.Run("what cannot be easily tested", func(t *testing.T) {
-		t.Log("✗ Initialization (os.Exit blocks testing)")
-		t.Log("✗ Async scheduling (time.AfterFunc)")
-		t.Log("✗ LSP protocol handling (requires jsonrpc2.Conn mock)")
-		t.Log("✗ Notification sending (requires connection)")
-		t.Log("✗ Generation counter races (timing-dependent)")
-	})
-
-	t.Run("recommended improvements", func(t *testing.T) {
-		t.Log("1. Replace os.Exit with error return")
-		t.Log("2. Add time abstraction (clock interface)")
-		t.Log("3. Create minimal Conn interface wrapper")
-		t.Log("4. Extract business logic from handlers")
-		t.Log("5. Add integration test fixtures")
-	})
-}
-
-// TestServerGetPhpCsFixerProviderConfig documents provider config lookup
-func TestServerGetPhpCsFixerProviderConfig(t *testing.T) {
-	t.Run("behavior", func(t *testing.T) {
-		t.Log("Searches serverConfig.DiagnosticsProviders map")
-		t.Log("Returns (config, true) if found and enabled")
-		t.Log("Returns (empty config, false) if not found or disabled")
-		t.Log("Only matches diagnostics.PhpCsFixerProviderId")
-	})
-
-	t.Run("usage", func(t *testing.T) {
-		t.Log("Used to check if PHP CS Fixer is available")
-		t.Log("Note: Currently defined but not used in codebase")
-		t.Log("May be for future features or leftover from refactoring")
-	})
+func TestHandle_MalformedParamsReturnError(t *testing.T) {
+	s, _ := newTestServer(t)
+	req, _ := jsonrpc2.NewNotification(protocol.MethodTextDocumentDidOpen, json.RawMessage(`{"textDocument": 42}`))
+	if err := s.Handle(context.Background(), func(context.Context, interface{}, error) error { return nil }, req); err == nil {
+		t.Error("expected an unmarshal error")
+	}
 }

@@ -35,10 +35,21 @@ const (
 	maxConcurrentAnalyses = 4
 )
 
+// Conn is the subset of jsonrpc2.Conn the server needs to talk back to the
+// client. Keeping it narrow lets tests substitute a recording fake.
+type Conn interface {
+	Notify(ctx context.Context, method string, params interface{}) error
+	Close() error
+}
+
 // Server represents the Language Server Protocol (LSP) server
 type Server struct {
-	conn         jsonrpc2.Conn
+	conn         Conn
 	serverConfig *config.Config
+
+	// exit is called when the server must terminate the process (no config
+	// at initialize). Overridable so tests can observe it.
+	exit func(code int)
 
 	diagnosticsProviders []diagnostics.DiagnosticsProvider
 	formattingProviders  []formatting.FormattingProvider
@@ -58,10 +69,11 @@ type Server struct {
 }
 
 // New creates a new LSP server instance
-func New(conn jsonrpc2.Conn) *Server {
+func New(conn Conn) *Server {
 	s := &Server{
 		conn:         conn,
 		serverConfig: &config.Config{},
+		exit:         os.Exit,
 		documents:    make(map[protocol.DocumentURI]string),
 		diagTimers:   make(map[protocol.DocumentURI]*time.Timer),
 		diagGen:      make(map[protocol.DocumentURI]uint64),
@@ -114,7 +126,10 @@ func (s *Server) handleInitialize(ctx context.Context, reply jsonrpc2.Replier, r
 		return err
 	}
 
-	log.Printf("%s%s Client info: name=%s, version=%s", logging.LogTagLSP, logging.LogTagServer, params.ClientInfo.Name, params.ClientInfo.Version)
+	// clientInfo is optional in the LSP spec; don't dereference it blindly.
+	if params.ClientInfo != nil {
+		log.Printf("%s%s Client info: name=%s, version=%s", logging.LogTagLSP, logging.LogTagServer, params.ClientInfo.Name, params.ClientInfo.Version)
+	}
 
 	// Load configuration. Show warning if not found and exit
 	if !s.serverConfig.IsInitialized() {
@@ -132,7 +147,8 @@ func (s *Server) handleInitialize(ctx context.Context, reply jsonrpc2.Replier, r
 		serverConfig, err := s.serverConfig.LoadConfig(projectRoot)
 		if err != nil {
 			log.Printf("%s%s No config: %v", logging.LogTagLSP, logging.LogTagServer, err)
-			os.Exit(0)
+			s.exit(0)
+			return reply(ctx, nil, fmt.Errorf("no config: %w", err))
 		}
 		s.serverConfig = serverConfig
 
@@ -599,15 +615,6 @@ func (s *Server) loadFormattingProviders() []formatting.FormattingProvider {
 	// Initialize and cache
 	s.formattingProviders = formatting.LoadFormattingProviders(s.serverConfig.DiagnosticsProviders)
 	return s.formattingProviders
-}
-
-func (s *Server) getPhpCsFixerProviderConfig() (config.DiagnosticsProvider, bool) {
-	for id, cfg := range s.serverConfig.DiagnosticsProviders {
-		if id == diagnostics.PhpCsFixerProviderId && cfg.Enabled {
-			return cfg, true
-		}
-	}
-	return config.DiagnosticsProvider{}, false
 }
 
 func (s *Server) handleDocumentFormatting(ctx context.Context, reply jsonrpc2.Replier, req jsonrpc2.Request) error {
