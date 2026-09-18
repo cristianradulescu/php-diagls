@@ -21,7 +21,6 @@ import (
 
 const (
 	diagnosticsDebounceInterval = 300 * time.Millisecond
-	formattingDebounceInterval  = 100 * time.Millisecond
 
 	// diagnosticsTimeout bounds a single diagnostics analysis run, mirroring
 	// the default formatting timeout, so a wedged docker exec can't leak a
@@ -46,11 +45,6 @@ type Server struct {
 	diagTimers map[protocol.DocumentURI]*time.Timer
 	diagGen    map[protocol.DocumentURI]uint64
 	diagCancel map[protocol.DocumentURI]context.CancelFunc
-
-	// Debounce for formatting (per-file) with last-wins strategy
-	fmtMu     sync.Mutex
-	fmtTimers map[protocol.DocumentURI]*time.Timer
-	fmtGen    map[protocol.DocumentURI]uint64
 }
 
 // New creates a new LSP server instance
@@ -62,8 +56,6 @@ func New(conn jsonrpc2.Conn) *Server {
 		diagTimers:   make(map[protocol.DocumentURI]*time.Timer),
 		diagGen:      make(map[protocol.DocumentURI]uint64),
 		diagCancel:   make(map[protocol.DocumentURI]context.CancelFunc),
-		fmtTimers:    make(map[protocol.DocumentURI]*time.Timer),
-		fmtGen:       make(map[protocol.DocumentURI]uint64),
 	}
 
 	return s
@@ -260,22 +252,9 @@ func (s *Server) handleDidClose(ctx context.Context, _ jsonrpc2.Replier, req jso
 
 	s.deleteDocumentContent(params.TextDocument.URI)
 	s.cancelScheduledDiagnostics(params.TextDocument.URI)
-	s.clearFormattingGeneration(params.TextDocument.URI)
 	s.publishDiagnostics(ctx, params.TextDocument.URI, []protocol.Diagnostic{})
 
 	return nil
-}
-
-// clearFormattingGeneration drops uri's formatting generation counter so it
-// doesn't linger in fmtGen for the rest of the session. Unlike diagnostics,
-// a pending formatting timer must not be stopped here: scheduleFormatting
-// owns an LSP reply that has to fire exactly once, and deleting the
-// generation entry (rather than the timer) still lets that happen - the
-// callback just takes its "superseded" branch and replies with no edits.
-func (s *Server) clearFormattingGeneration(uri protocol.DocumentURI) {
-	s.fmtMu.Lock()
-	defer s.fmtMu.Unlock()
-	delete(s.fmtGen, uri)
 }
 
 // cancelScheduledDiagnostics stops any pending debounced analysis for uri,
@@ -455,32 +434,16 @@ func (s *Server) scheduleDiagnosticsPriority(uri protocol.DocumentURI) {
 	}(uri, gen)
 }
 
-func (s *Server) scheduleFormatting(ctx context.Context, reply jsonrpc2.Replier, params protocol.DocumentFormattingParams) {
+// formatDocument runs the document formatting request for params in its own
+// goroutine and replies exactly once. Formatting is a request/response
+// exchange, so it is deliberately not debounced: dropping a request would
+// leave the client waiting on a reply that never comes. Concurrent requests
+// for the same document each get their own reply; the client applies
+// whichever it receives.
+func (s *Server) formatDocument(ctx context.Context, reply jsonrpc2.Replier, params protocol.DocumentFormattingParams) {
 	uri := params.TextDocument.URI
 
-	s.fmtMu.Lock()
-
-	if timer, exists := s.fmtTimers[uri]; exists {
-		timer.Stop()
-	}
-
-	if s.fmtGen == nil {
-		s.fmtGen = make(map[protocol.DocumentURI]uint64)
-	}
-	s.fmtGen[uri]++
-	gen := s.fmtGen[uri]
-
-	s.fmtTimers[uri] = time.AfterFunc(formattingDebounceInterval, func() {
-		s.fmtMu.Lock()
-		delete(s.fmtTimers, uri)
-		currentGen := s.fmtGen[uri]
-		s.fmtMu.Unlock()
-
-		if gen != currentGen {
-			_ = reply(ctx, []protocol.TextEdit{}, nil)
-			return
-		}
-
+	go func() {
 		filePath := uri.Filename()
 
 		content, exists := s.getDocumentContent(uri)
@@ -502,35 +465,35 @@ func (s *Server) scheduleFormatting(ctx context.Context, reply jsonrpc2.Replier,
 		provider := formattingProviders[0]
 		formattedContent, err := provider.Format(ctx, filePath, content)
 		if err != nil {
+			log.Printf("%s%s Formatting failed: %v", logging.LogTagLSP, logging.LogTagServer, err)
 			_ = reply(ctx, []protocol.TextEdit{}, nil)
 			return
 		}
 
-		if formattedContent == content {
-			_ = reply(ctx, []protocol.TextEdit{}, nil)
-			return
-		}
+		_ = reply(ctx, fullDocumentEdit(content, formattedContent), nil)
+	}()
+}
 
-		lines := strings.Split(content, "\n")
-		endLine := uint32(len(lines) - 1)
-		endCharacter := uint32(0)
-		if len(lines) > 0 {
-			endCharacter = uint32(len(lines[len(lines)-1]))
-		}
+// fullDocumentEdit returns a single TextEdit replacing all of content with
+// formatted, or no edits when the two are identical.
+func fullDocumentEdit(content, formatted string) []protocol.TextEdit {
+	if formatted == content {
+		return []protocol.TextEdit{}
+	}
 
-		textEdits := []protocol.TextEdit{
-			{
-				Range: protocol.Range{
-					Start: protocol.Position{Line: 0, Character: 0},
-					End:   protocol.Position{Line: endLine, Character: endCharacter},
-				},
-				NewText: formattedContent,
+	lines := strings.Split(content, "\n")
+	endLine := uint32(len(lines) - 1)
+	endCharacter := uint32(len(lines[len(lines)-1]))
+
+	return []protocol.TextEdit{
+		{
+			Range: protocol.Range{
+				Start: protocol.Position{Line: 0, Character: 0},
+				End:   protocol.Position{Line: endLine, Character: endCharacter},
 			},
-		}
-
-		_ = reply(ctx, textEdits, nil)
-	})
-	s.fmtMu.Unlock()
+			NewText: formatted,
+		},
+	}
 }
 
 func (s *Server) loadDiagnosticsProviders() []diagnostics.DiagnosticsProvider {
@@ -627,6 +590,6 @@ func (s *Server) handleDocumentFormatting(ctx context.Context, reply jsonrpc2.Re
 		return err
 	}
 
-	s.scheduleFormatting(ctx, reply, params)
+	s.formatDocument(ctx, reply, params)
 	return nil
 }
