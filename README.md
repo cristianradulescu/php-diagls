@@ -5,7 +5,7 @@ A Language Server Protocol (LSP) implementation for PHP that provides dynamic di
 ## Features
 
 - **Docker Integration**: Run PHP CS Fixer and other tools inside Docker containers
-- **Diagnostics**: Real-time code analysis and issue detection
+- **Diagnostics**: Code analysis and issue detection, run when a file is opened, saved, or changed on disk
 - **Document Formatting**: Automatic code formatting using php-cs-fixer
 - **Configurable**: Use `.php-diagls.json` configuration files for project-specific settings
 
