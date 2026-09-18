@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf16"
 
 	"github.com/cristianradulescu/php-diagls/internal/config"
 	"github.com/cristianradulescu/php-diagls/internal/container"
@@ -29,7 +31,10 @@ const (
 )
 
 var (
-	hunkHeaderRegexp         = regexp.MustCompile(`@@\s+-(\d+),(\d+)?\s+\+(\d+),(\d+)?\s+@@`)
+	// hunkHeaderRegexp captures the original start line (group 1) and, when
+	// present, the original line count (group 2). The count is optional per
+	// the unified diff format ("@@ -1 +1 @@" is valid for single-line hunks).
+	hunkHeaderRegexp         = regexp.MustCompile(`@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@`)
 	ruleDescriptionPrefixRe  = regexp.MustCompile(`Description of .* rule.`)
 	ruleDescriptionConfigRe  = regexp.MustCompile(`(?s)(Fixer is configurable|Fixer applying).*`)
 	ruleDescriptionExampleRe = regexp.MustCompile(`(?s)Fixing examples:.*`)
@@ -187,7 +192,7 @@ func (dp *PhpCsFixer) parseDiffForDiagnostics(diff string) []protocol.Range {
 	var linesRange []protocol.Range
 
 	lines := strings.Split(diff, "\n")
-	originalLineNum, originalColNum, lineChange := 0, 0, false
+	originalLineNum, lineChange := 0, false
 
 	for _, line := range lines {
 		if strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++") {
@@ -196,14 +201,12 @@ func (dp *PhpCsFixer) parseDiffForDiagnostics(diff string) []protocol.Range {
 
 		if strings.HasPrefix(line, "@@") {
 			matches := hunkHeaderRegexp.FindStringSubmatch(line)
-			if len(matches) >= 3 {
+			if len(matches) >= 2 {
 				if origLine, err := strconv.Atoi(matches[1]); err == nil {
 					originalLineNum = origLine - 1
 				}
-				if origCol, err := strconv.Atoi(matches[2]); err == nil {
-					originalColNum = origCol - 1
-				}
 			}
+			lineChange = false
 			continue
 		}
 
@@ -213,10 +216,10 @@ func (dp *PhpCsFixer) parseDiffForDiagnostics(diff string) []protocol.Range {
 
 		switch line[0] {
 		case '-':
-			originalCode := strings.TrimPrefix(line, "-")
+			originalCode := line[1:]
 			linesRange = append(linesRange, protocol.Range{
-				Start: protocol.Position{Line: uint32(originalLineNum), Character: uint32(originalColNum)},
-				End:   protocol.Position{Line: uint32(originalLineNum), Character: uint32(len(strings.TrimSpace(originalCode)))},
+				Start: protocol.Position{Line: uint32(originalLineNum), Character: firstNonSpaceColumn(originalCode)},
+				End:   protocol.Position{Line: uint32(originalLineNum), Character: utf16Length(originalCode)},
 			})
 			lineChange = true
 			originalLineNum++
@@ -225,17 +228,33 @@ func (dp *PhpCsFixer) parseDiffForDiagnostics(diff string) []protocol.Range {
 			// If a new line is added (ex: "blank_line_before_statement") we need the added line
 			if !lineChange {
 				linesRange = append(linesRange, protocol.Range{
-					Start: protocol.Position{Line: uint32(originalLineNum), Character: uint32(originalColNum)},
-					End:   protocol.Position{Line: uint32(originalLineNum), Character: uint32(originalColNum)},
+					Start: protocol.Position{Line: uint32(originalLineNum), Character: 0},
+					End:   protocol.Position{Line: uint32(originalLineNum), Character: 0},
 				})
 			}
-			originalLineNum++
+			// Added lines don't exist in the original, so the original line
+			// counter must not advance; a later context line will.
 		case ' ':
+			lineChange = false
 			originalLineNum++
 		}
 	}
 
 	return linesRange
+}
+
+// firstNonSpaceColumn returns the UTF-16 column of the first non-whitespace
+// character in line, so a diagnostic on an indented line starts at the code
+// rather than at the indentation.
+func firstNonSpaceColumn(line string) uint32 {
+	trimmed := strings.TrimLeftFunc(line, unicode.IsSpace)
+	return utf16Length(line[:len(line)-len(trimmed)])
+}
+
+// utf16Length returns the length of s in UTF-16 code units, which is what LSP
+// positions count by default.
+func utf16Length(s string) uint32 {
+	return uint32(len(utf16.Encode([]rune(s))))
 }
 
 func (dp *PhpCsFixer) explainRule(ctx context.Context, rule string) string {

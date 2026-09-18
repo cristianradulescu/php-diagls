@@ -636,24 +636,3 @@ func TestPhpCsFixer_parseDiffRegex(t *testing.T) {
 		})
 	}
 }
-
-// TestPhpCsFixer_DiagnosticCharacterRange documents how character ranges
-// are calculated for diagnostics from removed lines.
-func TestPhpCsFixer_DiagnosticCharacterRange(t *testing.T) {
-	t.Log("Character range calculation for removed lines:")
-	t.Log("")
-	t.Log("For a removed line like: '-    $a = array();'")
-	t.Log("1. Strip the '-' prefix: '    $a = array();'")
-	t.Log("2. Trim whitespace: '$a = array();'")
-	t.Log("3. Use length of trimmed string as end character")
-	t.Log("")
-	t.Log("Example:")
-	t.Log("  Line: '-    $a = array();'")
-	t.Log("  After strip: '    $a = array();'")
-	t.Log("  After trim: '$a = array();' (length = 14)")
-	t.Log("  Range: Start(line: N, char: 0), End(line: N, char: 14)")
-	t.Log("")
-	t.Log("For added lines without preceding removal:")
-	t.Log("  Range: Start(line: N, char: 0), End(line: N, char: 0)")
-	t.Log("  This creates a zero-width range at the insertion point")
-}
