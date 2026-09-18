@@ -65,8 +65,8 @@ the schema).
   access is available or needed for `go test ./...`; the `docker` CLI binary
   just needs to exist on PATH (it does in this environment) for `exec.Command`
   to run and fail cleanly.
-- The `-stdin` CLI flag only changes where logs go (stderr); actual LSP
-  communication is always over stdin/stdout regardless of the flag.
+- The binary takes no flags. LSP communication is always over stdin/stdout
+  and logs always go to stderr.
 
 ## Style notes
 - Commit messages are short, imperative, no prefix (e.g. "Fix formatting

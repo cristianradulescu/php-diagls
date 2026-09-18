@@ -14,15 +14,11 @@ import (
 )
 
 func main() {
-	var stdin bool
-
-	flag.BoolVar(&stdin, "stdin", false, "Use stdin/stdout for communication")
 	flag.Parse()
 
-	if stdin {
-		log.SetOutput(os.Stderr)
-
-	}
+	// LSP traffic owns stdout, so logs must never go there. log's default
+	// writer is already stderr; set it explicitly so that stays true.
+	log.SetOutput(os.Stderr)
 	log.Printf("%s%s Starting PHP Diagnostics LSP server", logging.LogTagLSP, logging.LogTagMain)
 
 	stream := jsonrpc2.NewStream(struct {
