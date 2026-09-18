@@ -268,15 +268,32 @@ func (dp *PhpCsFixer) explainRule(ctx context.Context, rule string) string {
 		fmt.Sprintf("%s describe %s 2>/dev/null", utils.ShellQuote(dp.config.Path), utils.ShellQuote(rule)),
 	)
 
-	fullRuleDescription := strings.TrimSpace(string(result.Stdout))
+	// Only cache descriptions that were actually produced. A cancelled or
+	// timed-out describe call would otherwise pin an empty message to this
+	// rule for the rest of the session.
+	if result.Err != nil || result.ExitCode != 0 {
+		log.Printf("Could not describe rule %s (exit %d): %v", rule, result.ExitCode, result.Err)
+		return rule
+	}
 
-	ruleDescription := ruleDescriptionPrefixRe.ReplaceAllString(fullRuleDescription, "")
-	ruleDescription = ruleDescriptionConfigRe.ReplaceAllString(ruleDescription, "")
-	ruleDescription = ruleDescriptionExampleRe.ReplaceAllString(ruleDescription, "")
+	ruleDescription := cleanRuleDescription(string(result.Stdout))
+	if ruleDescription == "" {
+		return rule
+	}
 
 	dp.ruleDescriptions.Store(rule, ruleDescription)
 
 	return ruleDescription
+}
+
+// cleanRuleDescription reduces the output of `php-cs-fixer describe <rule>`
+// to its one-paragraph summary by stripping the "Description of X rule."
+// header and the configuration/examples sections that follow it.
+func cleanRuleDescription(fullRuleDescription string) string {
+	ruleDescription := ruleDescriptionPrefixRe.ReplaceAllString(strings.TrimSpace(fullRuleDescription), "")
+	ruleDescription = ruleDescriptionConfigRe.ReplaceAllString(ruleDescription, "")
+	ruleDescription = ruleDescriptionExampleRe.ReplaceAllString(ruleDescription, "")
+	return strings.TrimSpace(ruleDescription)
 }
 
 // CanFormat returns true if formatting is enabled for this provider

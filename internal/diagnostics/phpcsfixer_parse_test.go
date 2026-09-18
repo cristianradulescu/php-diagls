@@ -1,6 +1,7 @@
 package diagnostics
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
@@ -84,5 +85,30 @@ func TestPhpCsFixer_parseDiffForDiagnostics(t *testing.T) {
 				t.Errorf("parseDiffForDiagnostics()\n got: %+v\nwant: %+v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestCleanRuleDescription(t *testing.T) {
+	full := "Description of array_syntax rule.\nPHP arrays should be declared using the configured syntax.\n\nFixer is configurable using following option:\n* syntax ('long', 'short'): whether to use the `long` or `short` array syntax; defaults to 'short'\n\nFixing examples:\n * Example #1.\n"
+	got := cleanRuleDescription(full)
+	want := "PHP arrays should be declared using the configured syntax."
+	if got != want {
+		t.Errorf("cleanRuleDescription() = %q, want %q", got, want)
+	}
+	if cleanRuleDescription("") != "" {
+		t.Errorf("empty input should yield empty output")
+	}
+}
+
+func TestPhpCsFixer_explainRule_DoesNotCacheFailures(t *testing.T) {
+	dp := NewPhpCsFixer(config.DiagnosticsProvider{Container: "nonexistent-container-xyz", Path: "/usr/local/bin/php-cs-fixer"})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if got := dp.explainRule(ctx, "array_syntax"); got != "array_syntax" {
+		t.Errorf("failed describe should fall back to the rule name, got %q", got)
+	}
+	if _, cached := dp.ruleDescriptions.Load("array_syntax"); cached {
+		t.Errorf("failed describe must not be cached")
 	}
 }
