@@ -27,6 +27,12 @@ const (
 	// the default formatting timeout, so a wedged docker exec can't leak a
 	// goroutine/process for the life of the session.
 	diagnosticsTimeout = 30 * time.Second
+
+	// maxConcurrentAnalyses caps how many files are analyzed at once across
+	// the whole server. Each analysis can fan out into several docker execs,
+	// and workspace/didChangeWatchedFiles can report hundreds of files after
+	// a branch switch, so without a global bound that becomes a docker storm.
+	maxConcurrentAnalyses = 4
 )
 
 // Server represents the Language Server Protocol (LSP) server
@@ -46,6 +52,9 @@ type Server struct {
 	diagTimers map[protocol.DocumentURI]*time.Timer
 	diagGen    map[protocol.DocumentURI]uint64
 	diagCancel map[protocol.DocumentURI]context.CancelFunc
+
+	// analysisSem bounds concurrent runDiagnostics calls (see maxConcurrentAnalyses).
+	analysisSem chan struct{}
 }
 
 // New creates a new LSP server instance
@@ -57,6 +66,7 @@ func New(conn jsonrpc2.Conn) *Server {
 		diagTimers:   make(map[protocol.DocumentURI]*time.Timer),
 		diagGen:      make(map[protocol.DocumentURI]uint64),
 		diagCancel:   make(map[protocol.DocumentURI]context.CancelFunc),
+		analysisSem:  make(chan struct{}, maxConcurrentAnalyses),
 	}
 
 	return s
@@ -367,22 +377,43 @@ func (s *Server) scheduleDiagnostics(uri protocol.DocumentURI) {
 		delete(s.diagTimers, uri)
 		s.diagMu.Unlock()
 
-		ctx, cancel := s.beginDiagnosticsRun(uri)
-		defer cancel()
-
-		filePath := utils.URIToPath(uri)
-		diags := s.collectDiagnostics(ctx, filePath)
-
-		s.diagMu.Lock()
-		currentGen := s.diagGen[uri]
-		s.diagMu.Unlock()
-		if gen != currentGen {
-			return
-		}
-
-		s.publishDiagnostics(context.Background(), uri, diags)
+		s.runDiagnostics(uri, gen)
 	})
 	s.diagMu.Unlock()
+}
+
+// runDiagnostics analyzes uri and publishes the result unless a newer
+// generation than gen has been scheduled for it in the meantime. It waits
+// for a slot in analysisSem first, so a burst of scheduled files is worked
+// through at most maxConcurrentAnalyses at a time.
+func (s *Server) runDiagnostics(uri protocol.DocumentURI, gen uint64) {
+	// Wait for a slot before starting the timed run, so time spent queued
+	// behind other files doesn't eat into this file's diagnosticsTimeout.
+	s.analysisSem <- struct{}{}
+	defer func() { <-s.analysisSem }()
+
+	// A newer request may have arrived while we waited for a slot; don't
+	// spend docker time on a result that would be discarded anyway.
+	if !s.isCurrentGeneration(uri, gen) {
+		return
+	}
+
+	ctx, cancel := s.beginDiagnosticsRun(uri)
+	defer cancel()
+
+	diags := s.collectDiagnostics(ctx, utils.URIToPath(uri))
+
+	if !s.isCurrentGeneration(uri, gen) {
+		return
+	}
+
+	s.publishDiagnostics(context.Background(), uri, diags)
+}
+
+func (s *Server) isCurrentGeneration(uri protocol.DocumentURI, gen uint64) bool {
+	s.diagMu.Lock()
+	defer s.diagMu.Unlock()
+	return s.diagGen[uri] == gen
 }
 
 func (s *Server) scheduleDiagnosticsPriority(uri protocol.DocumentURI) {
@@ -400,22 +431,7 @@ func (s *Server) scheduleDiagnosticsPriority(uri protocol.DocumentURI) {
 	gen := s.diagGen[uri]
 	s.diagMu.Unlock()
 
-	go func(u protocol.DocumentURI, g uint64) {
-		ctx, cancel := s.beginDiagnosticsRun(u)
-		defer cancel()
-
-		filePath := utils.URIToPath(u)
-		diags := s.collectDiagnostics(ctx, filePath)
-
-		s.diagMu.Lock()
-		currentGen := s.diagGen[u]
-		s.diagMu.Unlock()
-		if g != currentGen {
-			return
-		}
-
-		s.publishDiagnostics(context.Background(), u, diags)
-	}(uri, gen)
+	go s.runDiagnostics(uri, gen)
 }
 
 // formatDocument runs the document formatting request for params in its own
