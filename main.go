@@ -10,6 +10,7 @@ import (
 	"github.com/cristianradulescu/php-diagls/internal/logging"
 	"github.com/cristianradulescu/php-diagls/internal/server"
 	"go.lsp.dev/jsonrpc2"
+	"go.lsp.dev/protocol"
 )
 
 func main() {
@@ -40,7 +41,10 @@ func main() {
 
 	lspServer := server.New(conn)
 	log.Printf("%s%s Starting to handle requests...", logging.LogTagLSP, logging.LogTagMain)
-	conn.Go(ctx, lspServer.Handle)
+	// CancelHandler intercepts $/cancelRequest and cancels the context of the
+	// matching in-flight request, so long-running handlers (formatting) can
+	// stop their docker exec when the client gives up on them.
+	conn.Go(ctx, protocol.CancelHandler(lspServer.Handle))
 
 	// Wait for the connection to be done (e.g., closed by the client or an error occurs).
 	log.Printf("%s%s LSP server is running, waiting for requests...", logging.LogTagLSP, logging.LogTagMain)

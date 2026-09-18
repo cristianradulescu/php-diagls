@@ -166,11 +166,6 @@ func TestServerHandle_MethodRouting(t *testing.T) {
 			handlerName: "handleExit",
 			description: "Closes connection and exits",
 		},
-		{
-			method:      protocol.MethodCancelRequest,
-			handlerName: "handleCancelRequest",
-			description: "Acknowledges request cancellation",
-		},
 	}
 
 	for _, tt := range tests {

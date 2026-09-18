@@ -88,8 +88,6 @@ func (s *Server) Handle(ctx context.Context, reply jsonrpc2.Replier, req jsonrpc
 		return s.handleShutdown(ctx, reply, req)
 	case protocol.MethodExit:
 		return s.handleExit(ctx, reply, req)
-	case protocol.MethodCancelRequest:
-		return s.handleCancelRequest(ctx, reply, req)
 	default:
 		log.Printf("%s%s Unhandled method: %s", logging.LogTagLSP, logging.LogTagServer, req.Method())
 		return reply(ctx, nil, nil)
@@ -312,21 +310,6 @@ func (s *Server) handleExit(_ context.Context, _ jsonrpc2.Replier, _ jsonrpc2.Re
 	log.Printf("%s%s Exiting server", logging.LogTagLSP, logging.LogTagServer)
 
 	return s.conn.Close()
-}
-
-func (s *Server) handleCancelRequest(ctx context.Context, reply jsonrpc2.Replier, req jsonrpc2.Request) error {
-	var params struct {
-		ID interface{} `json:"id"`
-	}
-	if err := json.Unmarshal(req.Params(), &params); err != nil {
-		log.Printf("%s%s Error unmarshaling cancel request params: %v", logging.LogTagLSP, logging.LogTagServer, err)
-		return err
-	}
-
-	log.Printf("%s%s Client requested cancellation for request ID: %v", logging.LogTagLSP, logging.LogTagServer, params.ID)
-	// Note: The actual cancellation is handled by the jsonrpc2 library's context cancellation mechanism
-	// This handler acknowledges the cancel request - the running operation should detect ctx.Done()
-	return reply(ctx, nil, nil)
 }
 
 func (s *Server) showWindowMessage(ctx context.Context, messageType protocol.MessageType, message string) {
