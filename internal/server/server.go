@@ -386,7 +386,7 @@ func (s *Server) scheduleDiagnostics(uri protocol.DocumentURI) {
 		ctx, cancel := s.beginDiagnosticsRun(uri)
 		defer cancel()
 
-		filePath := uri.Filename()
+		filePath := utils.URIToPath(uri)
 		diags := s.collectDiagnostics(ctx, filePath)
 
 		s.diagMu.Lock()
@@ -420,7 +420,7 @@ func (s *Server) scheduleDiagnosticsPriority(uri protocol.DocumentURI) {
 		ctx, cancel := s.beginDiagnosticsRun(u)
 		defer cancel()
 
-		filePath := u.Filename()
+		filePath := utils.URIToPath(u)
 		diags := s.collectDiagnostics(ctx, filePath)
 
 		s.diagMu.Lock()
@@ -444,7 +444,7 @@ func (s *Server) formatDocument(ctx context.Context, reply jsonrpc2.Replier, par
 	uri := params.TextDocument.URI
 
 	go func() {
-		filePath := uri.Filename()
+		filePath := utils.URIToPath(uri)
 
 		content, exists := s.getDocumentContent(uri)
 		if !exists {

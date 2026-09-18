@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -21,8 +22,24 @@ var hunkHeaderRegexp = regexp.MustCompile(`@@\s+-(\d+),(\d+)?\s+\+(\d+),(\d+)?\s
 // re-walk the filesystem with os.Stat every time.
 var projectRootCache sync.Map // map[string]string: starting dir -> resolved root
 
+// URIToPath converts a document URI to a local filesystem path, decoding
+// percent-escapes (e.g. "%20" -> " "). Unlike protocol.DocumentURI.Filename it
+// never panics: anything that isn't a parseable file:// URI is returned with
+// the scheme prefix stripped, so callers always get a usable string.
 func URIToPath(uri protocol.DocumentURI) string {
-	return strings.TrimPrefix(string(uri), "file://")
+	raw := string(uri)
+	if !strings.HasPrefix(raw, "file://") {
+		return raw
+	}
+
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "file" {
+		return strings.TrimPrefix(raw, "file://")
+	}
+
+	// A "file://./x" style URI parses as host "." and path "/x"; keep the
+	// host so the relative form survives.
+	return parsed.Host + parsed.Path
 }
 
 // Find the project root directory by looking for the config file

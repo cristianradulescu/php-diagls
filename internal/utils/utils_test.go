@@ -25,7 +25,22 @@ func TestURIToPath(t *testing.T) {
 		{
 			name:     "file URI with spaces",
 			uri:      "file:///home/user/my%20project/file.php",
-			expected: "/home/user/my%20project/file.php",
+			expected: "/home/user/my project/file.php",
+		},
+		{
+			name:     "file URI with non-ASCII characters",
+			uri:      "file:///home/user/caf%C3%A9/file.php",
+			expected: "/home/user/café/file.php",
+		},
+		{
+			name:     "file URI with parentheses",
+			uri:      "file:///home/user/proj%20(copy)/file.php",
+			expected: "/home/user/proj (copy)/file.php",
+		},
+		{
+			name:     "non-file scheme is returned unchanged",
+			uri:      "untitled:Untitled-1",
+			expected: "untitled:Untitled-1",
 		},
 		{
 			name:     "Windows file URI",
