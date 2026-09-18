@@ -53,8 +53,17 @@ func (dp *PhpLint) Analyze(ctx context.Context, filePath string) ([]protocol.Dia
 		fmt.Sprintf("%s -l %s 2>&1", utils.ShellQuote(dp.config.Path), utils.ShellQuote(relativeFilePath)),
 	)
 
-	output := string(result.Stdout)
-	if strings.HasPrefix(output, "No syntax errors detected") {
+	return dp.diagnosticsFromOutput(string(result.Stdout), result)
+}
+
+// diagnosticsFromOutput turns `php -l` output into diagnostics. A syntax
+// error yields exactly one diagnostic (php -l stops at the first); a clean
+// run yields none. Anything else with a failing exit code is reported as an
+// error so a broken container or binary doesn't masquerade as a clean file.
+func (dp *PhpLint) diagnosticsFromOutput(output string, result *container.CommandResult) ([]protocol.Diagnostic, error) {
+	var diagnostics []protocol.Diagnostic
+
+	if strings.Contains(output, "No syntax errors detected") {
 		return diagnostics, nil
 	}
 
@@ -82,7 +91,7 @@ func (dp *PhpLint) Analyze(ctx context.Context, filePath string) ([]protocol.Dia
 		return diagnostics, fmt.Errorf("running php -l: %w", result.Err)
 	}
 	if result.ExitCode != 0 {
-		return diagnostics, fmt.Errorf("php -l failed (exit %d): %s", result.ExitCode, utils.SummarizeOutput(result.Stdout, nil))
+		return diagnostics, fmt.Errorf("php -l failed (exit %d): %s", result.ExitCode, utils.SummarizeOutput([]byte(output), nil))
 	}
 
 	return diagnostics, nil

@@ -68,12 +68,22 @@ func (dp *PhpStan) Analyze(ctx context.Context, filePath string) ([]protocol.Dia
 
 	// phpstan exits 1 when it reports errors but still prints the JSON
 	// report; output that doesn't parse means it never got that far.
-	var fullAnalysisResult PhpstanOutputResult
-	if err := json.Unmarshal(result.Stdout, &fullAnalysisResult); err != nil {
+	var report PhpstanOutputResult
+	if err := json.Unmarshal(result.Stdout, &report); err != nil {
 		return []protocol.Diagnostic{}, fmt.Errorf("phpstan produced no report (exit %d): %s", result.ExitCode, utils.SummarizeOutput(result.Stderr, result.Stdout))
 	}
 
-	for _, file := range fullAnalysisResult.Files {
+	return dp.diagnosticsFromReport(report)
+}
+
+// diagnosticsFromReport converts a parsed phpstan JSON report into LSP
+// diagnostics. Non-file errors (bad config, missing autoloader, ...) come
+// back in the top-level "errors" array and are returned as an error
+// alongside whatever file diagnostics were produced.
+func (dp *PhpStan) diagnosticsFromReport(report PhpstanOutputResult) ([]protocol.Diagnostic, error) {
+	var diagnostics []protocol.Diagnostic
+
+	for _, file := range report.Files {
 		for _, message := range file.Messages {
 			line := uint32(0)
 			if message.Line > 0 {
@@ -98,10 +108,8 @@ func (dp *PhpStan) Analyze(ctx context.Context, filePath string) ([]protocol.Dia
 		}
 	}
 
-	// Non-file errors (bad config, missing autoloader, ...) come back in the
-	// top-level "errors" array; surface them instead of dropping them.
-	if len(fullAnalysisResult.Errors) > 0 {
-		return diagnostics, fmt.Errorf("phpstan reported: %s", strings.Join(fullAnalysisResult.Errors, "; "))
+	if len(report.Errors) > 0 {
+		return diagnostics, fmt.Errorf("phpstan reported: %s", strings.Join(report.Errors, "; "))
 	}
 
 	return diagnostics, nil
