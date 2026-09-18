@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -502,20 +503,43 @@ func (s *Server) loadDiagnosticsProviders() []diagnostics.DiagnosticsProvider {
 		return s.diagnosticsProviders
 	}
 
-	providers := []diagnostics.DiagnosticsProvider{}
+	// Collect enabled provider ids in a stable order so the resulting slice
+	// (and thus diagnostics ordering) doesn't depend on map iteration.
+	ids := make([]string, 0, len(s.serverConfig.DiagnosticsProviders))
 	for id, providerConfig := range s.serverConfig.DiagnosticsProviders {
-		// Initialize only enabled diagnostics providers
-		if !providerConfig.Enabled {
+		if providerConfig.Enabled {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+
+	// Each provider's construction validates its container and binary with
+	// docker calls that can take seconds (or time out). This runs from the
+	// initialize handler, which blocks the whole JSON-RPC loop, so validate
+	// all providers concurrently instead of one after another.
+	type result struct {
+		provider diagnostics.DiagnosticsProvider
+		err      error
+	}
+	results := make([]result, len(ids))
+	var wg sync.WaitGroup
+	for i, id := range ids {
+		wg.Add(1)
+		go func(i int, id string) {
+			defer wg.Done()
+			provider, err := diagnostics.NewDiagnosticsProvider(id, s.serverConfig.DiagnosticsProviders[id])
+			results[i] = result{provider: provider, err: err}
+		}(i, id)
+	}
+	wg.Wait()
+
+	providers := []diagnostics.DiagnosticsProvider{}
+	for _, r := range results {
+		if r.err != nil {
+			s.showWindowMessage(context.Background(), protocol.MessageTypeError, fmt.Sprintf("%v", r.err))
 			continue
 		}
-
-		provider, err := diagnostics.NewDiagnosticsProvider(id, providerConfig)
-		if err != nil {
-			s.showWindowMessage(context.Background(), protocol.MessageTypeError, fmt.Sprintf("%v", err))
-			continue
-		}
-
-		providers = append(providers, provider)
+		providers = append(providers, r.provider)
 	}
 
 	// Cache and return
