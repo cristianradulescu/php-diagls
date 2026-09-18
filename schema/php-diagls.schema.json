@@ -18,6 +18,9 @@
         },
         "phpstan": {
           "$ref": "#/$defs/phpStanProvider"
+        },
+        "phplint": {
+          "$ref": "#/$defs/phpLintProvider"
         }
       },
       "additionalProperties": {
@@ -192,11 +195,51 @@
       },
       "required": ["enabled", "container", "path"],
       "additionalProperties": false
+    },
+    "phpLintProvider": {
+      "type": "object",
+      "description": "PHP syntax check (php -l) provider configuration",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable or disable the php -l syntax check",
+          "default": true
+        },
+        "container": {
+          "type": "string",
+          "description": "Name of the Docker container where the php binary is installed",
+          "minLength": 1,
+          "examples": ["my-php-container", "php-dev", "app-container"]
+        },
+        "path": {
+          "type": "string",
+          "description": "Full path to the php executable inside the container",
+          "minLength": 1,
+          "pattern": "^/.*",
+          "default": "/usr/local/bin/php",
+          "examples": ["/usr/local/bin/php", "/usr/bin/php"]
+        },
+        "excludePaths": {
+          "type": "array",
+          "description": "Paths (relative to project root) to exclude from the syntax check. Supports directory names, exact relative paths, and glob patterns.",
+          "items": {
+            "type": "string"
+          },
+          "examples": [["tests"], ["var", "public"], ["src/Legacy/*"]]
+        }
+      },
+      "required": ["enabled", "container", "path"],
+      "additionalProperties": false
     }
   },
   "examples": [
     {
       "diagnosticsProviders": {
+        "phplint": {
+          "enabled": true,
+          "container": "my-php-container",
+          "path": "/usr/local/bin/php"
+        },
         "phpcsfixer": {
           "enabled": true,
           "container": "my-php-container",
