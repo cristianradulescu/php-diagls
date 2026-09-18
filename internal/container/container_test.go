@@ -64,7 +64,7 @@ func TestValidateBinaryInContainer(t *testing.T) {
 			name:          "empty binary path should error",
 			containerName: "test-container",
 			binaryPath:    "",
-			expectError:   false, // TODO: ValidateBinaryInContainer currently doesn't validate empty paths
+			expectError:   true,
 		},
 		{
 			name:          "empty container name should error",
@@ -76,7 +76,7 @@ func TestValidateBinaryInContainer(t *testing.T) {
 			name:          "both empty should error",
 			containerName: "",
 			binaryPath:    "",
-			expectError:   false, // TODO: ValidateBinaryInContainer currently doesn't validate empty inputs
+			expectError:   true,
 		},
 	}
 
