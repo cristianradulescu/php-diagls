@@ -57,8 +57,9 @@ the schema).
   codes are treated as errors.
 - Provider tests (`internal/diagnostics/*_test.go`, `internal/container/*_test.go`)
   deliberately use nonexistent container names/binaries so they pass without
-  a real Docker daemon or container — they assert the graceful-failure path
-  (empty diagnostics, no error), not real tool output. Don't assume Docker
+  a real Docker daemon or container — they assert the failure path (empty
+  diagnostics plus a returned error, which the server shows to the user as a
+  window message), not real tool output. Don't assume Docker
   access is available or needed for `go test ./...`; the `docker` CLI binary
   just needs to exist on PATH (it does in this environment) for `exec.Command`
   to run and fail cleanly.

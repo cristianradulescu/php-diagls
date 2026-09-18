@@ -78,18 +78,19 @@ func (dp *PhpCsFixer) Analyze(ctx context.Context, filePath string) ([]protocol.
 	result := container.RunCommandInContainer(
 		ctx,
 		dp.config.Container,
-		fmt.Sprintf("%s fix %s --dry-run --diff --verbose --format json %s 2>/dev/null", utils.ShellQuote(dp.config.Path), utils.ShellQuote(relativeFilePath), configArg),
+		fmt.Sprintf("%s fix %s --dry-run --diff --verbose --format json %s", utils.ShellQuote(dp.config.Path), utils.ShellQuote(relativeFilePath), configArg),
 	)
 
 	if result.Err != nil {
-		log.Printf("Error running php-cs-fixer: %v", result.Err)
-		return []protocol.Diagnostic{}, nil
+		return []protocol.Diagnostic{}, fmt.Errorf("running php-cs-fixer: %w", result.Err)
 	}
 
+	// php-cs-fixer still emits its JSON report on exit code 8 (changes found)
+	// and 4 (invalid syntax); anything that doesn't parse is a real failure,
+	// typically a config or bootstrap error reported on stderr.
 	var fullAnalysisResult PhpCsFixerOutputResult
 	if err := json.Unmarshal(result.Stdout, &fullAnalysisResult); err != nil {
-		log.Printf("Unmarshall err: %s", err)
-		return []protocol.Diagnostic{}, nil
+		return []protocol.Diagnostic{}, fmt.Errorf("php-cs-fixer produced no report (exit %d): %s", result.ExitCode, utils.SummarizeOutput(result.Stderr, result.Stdout))
 	}
 
 	for _, file := range fullAnalysisResult.Files {
@@ -148,7 +149,7 @@ func (dp *PhpCsFixer) analyzeRule(ctx context.Context, relativeFilePath string, 
 	ruleResult := container.RunCommandInContainer(
 		ctx,
 		dp.config.Container,
-		fmt.Sprintf("%s fix %s --dry-run --diff --verbose --format json --rules %s 2>/dev/null", utils.ShellQuote(dp.config.Path), utils.ShellQuote(relativeFilePath), utils.ShellQuote(rule)),
+		fmt.Sprintf("%s fix %s --dry-run --diff --verbose --format json --rules %s", utils.ShellQuote(dp.config.Path), utils.ShellQuote(relativeFilePath), utils.ShellQuote(rule)),
 	)
 
 	if ruleResult.Err != nil {

@@ -231,3 +231,22 @@ func ApplyUnifiedDiff(originalContent, diff string) (string, error) {
 func ShellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
+
+// SummarizeOutput returns a short, single-line excerpt of a tool's output for
+// use in user-facing error messages: the first non-empty source is used,
+// whitespace is collapsed, and long output is truncated.
+func SummarizeOutput(primary, fallback []byte) string {
+	out := strings.TrimSpace(string(primary))
+	if out == "" {
+		out = strings.TrimSpace(string(fallback))
+	}
+	if out == "" {
+		return "(no output)"
+	}
+	out = strings.Join(strings.Fields(out), " ")
+	const max = 300
+	if len(out) > max {
+		out = out[:max] + "…"
+	}
+	return out
+}

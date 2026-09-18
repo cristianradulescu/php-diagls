@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/cristianradulescu/php-diagls/internal/config"
@@ -533,5 +534,21 @@ func TestShellQuote_RoundTripsThroughShell(t *testing.T) {
 		if string(out) != in {
 			t.Errorf("shell saw %q, want %q", out, in)
 		}
+	}
+}
+
+func TestSummarizeOutput(t *testing.T) {
+	if got := utils.SummarizeOutput(nil, nil); got != "(no output)" {
+		t.Errorf("empty -> %q", got)
+	}
+	if got := utils.SummarizeOutput([]byte("  "), []byte("fallback\n  text ")); got != "fallback text" {
+		t.Errorf("fallback -> %q", got)
+	}
+	if got := utils.SummarizeOutput([]byte("a\n\n b\tc"), []byte("x")); got != "a b c" {
+		t.Errorf("collapse -> %q", got)
+	}
+	long := strings.Repeat("y", 400)
+	if got := utils.SummarizeOutput([]byte(long), nil); len([]rune(got)) != 301 || !strings.HasSuffix(got, "…") {
+		t.Errorf("truncate -> len %d", len([]rune(got)))
 	}
 }

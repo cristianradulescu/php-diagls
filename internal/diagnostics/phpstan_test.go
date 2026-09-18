@@ -104,9 +104,10 @@ func TestPhpStan_Analyze(t *testing.T) {
 	// Test with non-existent container - should handle gracefully
 	diagnostics, err := analyzer.Analyze(t.Context(), testFile)
 
-	// Should not return error even if container doesn't exist
-	if err != nil {
-		t.Errorf("Analyze should handle errors gracefully, got error: %v", err)
+	// The container doesn't exist, so the tool can't run: that is a real
+	// failure the user must hear about, not an empty result.
+	if err == nil {
+		t.Errorf("Analyze should report an error when the container is unavailable")
 	}
 
 	// Current behavior: returns nil slice when no diagnostics found

@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"path/filepath"
+	"strings"
 
 	"github.com/cristianradulescu/php-diagls/internal/config"
 	"github.com/cristianradulescu/php-diagls/internal/container"
@@ -59,18 +59,18 @@ func (dp *PhpStan) Analyze(ctx context.Context, filePath string) ([]protocol.Dia
 	result := container.RunCommandInContainer(
 		ctx,
 		dp.config.Container,
-		fmt.Sprintf("%s analyze %s --memory-limit=-1 --no-progress --error-format=json %s 2>/dev/null", utils.ShellQuote(dp.config.Path), utils.ShellQuote(relativeFilePath), configArg),
+		fmt.Sprintf("%s analyze %s --memory-limit=-1 --no-progress --error-format=json %s", utils.ShellQuote(dp.config.Path), utils.ShellQuote(relativeFilePath), configArg),
 	)
 
 	if result.Err != nil {
-		log.Printf("Error running phpstan: %v", result.Err)
-		return []protocol.Diagnostic{}, nil
+		return []protocol.Diagnostic{}, fmt.Errorf("running phpstan: %w", result.Err)
 	}
 
+	// phpstan exits 1 when it reports errors but still prints the JSON
+	// report; output that doesn't parse means it never got that far.
 	var fullAnalysisResult PhpstanOutputResult
 	if err := json.Unmarshal(result.Stdout, &fullAnalysisResult); err != nil {
-		log.Printf("Unmarshall err: %s", err)
-		return []protocol.Diagnostic{}, nil
+		return []protocol.Diagnostic{}, fmt.Errorf("phpstan produced no report (exit %d): %s", result.ExitCode, utils.SummarizeOutput(result.Stderr, result.Stdout))
 	}
 
 	for _, file := range fullAnalysisResult.Files {
@@ -96,6 +96,12 @@ func (dp *PhpStan) Analyze(ctx context.Context, filePath string) ([]protocol.Dia
 			}
 			diagnostics = append(diagnostics, diagnostic)
 		}
+	}
+
+	// Non-file errors (bad config, missing autoloader, ...) come back in the
+	// top-level "errors" array; surface them instead of dropping them.
+	if len(fullAnalysisResult.Errors) > 0 {
+		return diagnostics, fmt.Errorf("phpstan reported: %s", strings.Join(fullAnalysisResult.Errors, "; "))
 	}
 
 	return diagnostics, nil

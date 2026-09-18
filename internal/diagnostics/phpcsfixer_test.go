@@ -173,8 +173,8 @@ echo "Hello World";
 	// The provider should return an empty slice, not an error
 	diagnostics, err := provider.Analyze(t.Context(), tmpFile)
 
-	if err != nil {
-		t.Errorf("Analyze should not return error for missing container, got: %v", err)
+	if err == nil {
+		t.Error("Analyze should report an error when the container is unavailable")
 	}
 
 	if diagnostics == nil {

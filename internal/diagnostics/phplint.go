@@ -3,7 +3,6 @@ package diagnostics
 import (
 	"context"
 	"fmt"
-	"log"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -80,7 +79,10 @@ func (dp *PhpLint) Analyze(ctx context.Context, filePath string) ([]protocol.Dia
 	}
 
 	if result.Err != nil {
-		log.Printf("Error running phplint command: %v. Output: %s", result.Err, output)
+		return diagnostics, fmt.Errorf("running php -l: %w", result.Err)
+	}
+	if result.ExitCode != 0 {
+		return diagnostics, fmt.Errorf("php -l failed (exit %d): %s", result.ExitCode, utils.SummarizeOutput(result.Stdout, nil))
 	}
 
 	return diagnostics, nil

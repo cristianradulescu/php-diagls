@@ -572,8 +572,12 @@ func (s *Server) collectDiagnostics(ctx context.Context, filePath string) []prot
 
 			providerDiagnostics, err := p.Analyze(ctx, filePath)
 			if err != nil {
-				s.showWindowMessage(ctx, protocol.MessageTypeError, fmt.Sprintf("Diagnostics provider %s failed: %v", p.Name(), err))
-				return
+				// Don't nag about work we cancelled ourselves (superseded run,
+				// closed document); only real tool failures reach the user.
+				if ctx.Err() == nil {
+					s.showWindowMessage(ctx, protocol.MessageTypeError, fmt.Sprintf("Diagnostics provider %s failed: %v", p.Name(), err))
+				}
+				// Fall through: a provider may return partial results with its error.
 			}
 
 			mu.Lock()
