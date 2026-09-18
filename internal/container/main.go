@@ -120,15 +120,21 @@ func ValidateContainer(containerName string) error {
 	return nil
 }
 
+// ValidateBinaryInContainer checks that binaryPath is an executable file in
+// containerName. It uses `test -x` rather than `which`, which is not shipped
+// by every base image.
 func ValidateBinaryInContainer(containerName string, binaryPath string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	containerCmd := fmt.Sprintf("which %s", binaryPath)
+	containerCmd := fmt.Sprintf("test -x %s", utils.ShellQuote(binaryPath))
 	result := RunCommandInContainer(ctx, containerName, containerCmd)
 
-	if strings.TrimSpace(string(result.Stdout)) != binaryPath {
-		return fmt.Errorf("binary %s not found in container %s; docker output: %s", binaryPath, containerName, result.Stdout)
+	if result.Err != nil {
+		return fmt.Errorf("could not check binary %s in container %s: %w", binaryPath, containerName, result.Err)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("binary %s not found or not executable in container %s (exit %d): %s", binaryPath, containerName, result.ExitCode, utils.SummarizeOutput(result.Stderr, result.Stdout))
 	}
 
 	return nil
