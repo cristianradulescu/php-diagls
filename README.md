@@ -77,7 +77,35 @@ The `mago` provider runs [Mago](https://github.com/carthage-software/mago) insid
 - `mago analyze` is given only the current file, so it can only resolve classes and functions from other files when your `mago.toml` lists them under `[source] paths` (e.g. `paths = ["src", "tests"]`, plus `includes = ["vendor"]` for dependencies). Without that, expect false `non-existent-class` errors.
 - With `format.enabled`, formatting pipes the buffer through `mago format --stdin-input`. The server uses a single formatter and which one it picks is unspecified when several have formatting enabled, so enable it on only one of `phpcsfixer` and `mago`.
 
-The Docker image in `docker/Dockerfile` ships `/usr/local/bin/mago`.
+The Docker image in `docker/Dockerfile` ships `/usr/local/bin/mago` (see [Docker Image](#docker-image)).
+
+## Docker Image
+
+`docker/Dockerfile` builds a PHP image with every supported tool installed at `/usr/local/bin`: `php`, `composer`, `php-cs-fixer`, `phpstan` and `mago`. Build it with:
+
+```bash
+make docker-build
+```
+
+Every tool defaults to its latest release. To pin versions, pass any of these variables (they are forwarded as `--build-arg`s):
+
+| Variable | Default | Example |
+| --- | --- | --- |
+| `PHP_VERSION` | `8.3` | `8.4` (any `php:<version>-cli` tag) |
+| `COMPOSER_VERSION` | `latest` | `2.8` (any `composer` image tag) |
+| `PHP_CS_FIXER_VERSION` | `latest` | `3.95.25` (the `v` prefix is optional) |
+| `PHPSTAN_VERSION` | `latest` | `2.2.14` |
+| `MAGO_VERSION` | `latest` | `1.49.0` (any `ghcr.io/carthage-software/mago` tag) |
+| `UID` / `GID` | `1000` | user/group id of the in-container `appuser` |
+| `DOCKER_IMAGE` | `php-diagls-tools` | name/tag of the built image |
+
+```bash
+make docker-build PHP_VERSION=8.4 MAGO_VERSION=1.49.0 PHPSTAN_VERSION=2.2.14 PHP_CS_FIXER_VERSION=3.95.25
+# or, without make:
+docker build --build-arg MAGO_VERSION=1.49.0 -t php-diagls-tools docker/
+```
+
+A version that doesn't exist fails the build. Versions aren't checked against each other: an older tool may refuse to run on a newer `PHP_VERSION` (e.g. php-cs-fixer 3.60 on PHP 8.4). With `latest`, Docker's layer cache keeps whatever was downloaded last time; add `--pull --no-cache` to `docker build` to pick up new releases.
 
 ## Document Formatting
 
