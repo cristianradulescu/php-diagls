@@ -28,6 +28,11 @@ func NewDiagnosticsProvider(providerId string, providerConfig config.Diagnostics
 		return NewPhpStan(providerConfig), nil
 	case PhpLintProviderId:
 		return NewPhpLint(providerConfig), nil
+	case MagoProviderId:
+		if err := validateMagoCommands(providerConfig.Commands); err != nil {
+			return nil, fmt.Errorf("failed to initialize %s; error: %s", providerId, err)
+		}
+		return NewMago(providerConfig), nil
 	default:
 		return nil, fmt.Errorf("unknown diagnostics provider: %s", providerId)
 	}

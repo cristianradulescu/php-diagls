@@ -479,3 +479,37 @@ func stringContains(s, substr string) bool {
 	}
 	return false
 }
+
+func TestNewFormattingProvider_Mago(t *testing.T) {
+	enabled := config.DiagnosticsProvider{
+		Enabled:   true,
+		Container: "test-container-that-does-not-exist",
+		Path:      "/usr/local/bin/mago",
+		Format:    config.FormatConfig{Enabled: true},
+	}
+
+	provider, err := formatting.NewFormattingProvider(diagnostics.MagoProviderId, enabled)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if provider.Id() != diagnostics.MagoProviderId || provider.Name() != diagnostics.MagoProviderName {
+		t.Errorf("Unexpected provider %s/%s", provider.Id(), provider.Name())
+	}
+
+	// Without the container the command fails; the original content must
+	// come back untouched alongside the error.
+	content := "<?php echo 'test';"
+	result, err := provider.Format(t.Context(), "/tmp/test.php", content)
+	if err == nil {
+		t.Error("Expected an error when the container is unavailable")
+	}
+	if result != content {
+		t.Errorf("Expected original content on error, got %q", result)
+	}
+
+	disabled := enabled
+	disabled.Format.Enabled = false
+	if _, err := formatting.NewFormattingProvider(diagnostics.MagoProviderId, disabled); err == nil || !contains(err.Error(), "formatting is not enabled") {
+		t.Errorf("Expected 'formatting is not enabled' error, got %v", err)
+	}
+}

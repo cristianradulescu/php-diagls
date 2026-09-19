@@ -13,6 +13,9 @@ RUN curl -L https://cs.symfony.com/download/php-cs-fixer-v3.phar -o /usr/local/b
 # Install phpstan
 COPY --from=ghcr.io/phpstan/phpstan:latest-php8.3 /composer/vendor/phpstan/phpstan/phpstan.phar /usr/local/bin/phpstan
 
+# Install mago (statically linked, so the binary from its Alpine image runs here)
+COPY --from=ghcr.io/carthage-software/mago:latest /usr/local/bin/mago /usr/local/bin/mago
+
 # Install necessary PHP extensions and their dependencies
 RUN apt-get update && apt-get install -y \
 	git \

@@ -18,12 +18,12 @@ phplint) that are installed inside a user-specified Docker container. See
 
 ## Architecture (flow)
 `main.go` → `internal/server` (LSP JSON-RPC handlers) → `internal/diagnostics`
-(one file per provider: `phpcsfixer.go`, `phpstan.go`, `phplint.go`, all
+(one file per provider: `phpcsfixer.go`, `phpstan.go`, `phplint.go`, `mago.go`, all
 implementing the `DiagnosticsProvider` interface in `main.go`) →
 `internal/container` (the only place that actually calls `docker exec`).
 `internal/config` loads `.php-diagls.json`. `internal/formatting` wraps
-whichever diagnostics provider has `Format.Enabled` (currently only
-phpcsfixer) behind a separate `FormattingProvider` interface.
+whichever diagnostics provider has `Format.Enabled` (phpcsfixer or mago)
+behind a separate `FormattingProvider` interface.
 
 Adding a new diagnostics provider: implement `Id/Name/Analyze`, register it
 in the switch in `internal/diagnostics/main.go` (`NewDiagnosticsProvider`),
@@ -57,6 +57,13 @@ the schema).
   `utils.ApplyUnifiedDiff` (in `internal/utils`). Exit code `8` from
   php-cs-fixer means "changes found", not a failure — only other non-zero
   codes are treated as errors.
+- **mago is one provider running up to two tools.** `commands` (mago-only
+  config field, default `["lint", "analyze"]`) picks which subcommands run;
+  they run concurrently and identical diagnostics (e.g. parse errors, which
+  both report) are deduped. mago reports byte offsets, so `mago.go` re-reads
+  the file from disk to compute UTF-16 columns. `mago analyze <file>` only
+  resolves symbols from other files if the project's `mago.toml` lists them
+  under `[source] paths`; otherwise it reports false `non-existent-class`.
 - Provider tests (`internal/diagnostics/*_test.go`, `internal/container/*_test.go`)
   deliberately use nonexistent container names/binaries so they pass without
   a real Docker daemon or container — they assert the failure path (empty

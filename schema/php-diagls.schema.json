@@ -21,6 +21,9 @@
         },
         "phplint": {
           "$ref": "#/$defs/phpLintProvider"
+        },
+        "mago": {
+          "$ref": "#/$defs/magoProvider"
         }
       },
       "additionalProperties": {
@@ -230,6 +233,62 @@
       },
       "required": ["enabled", "container", "path"],
       "additionalProperties": false
+    },
+    "magoProvider": {
+      "type": "object",
+      "description": "Mago linter, static analyzer and formatter provider configuration",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable or disable Mago",
+          "default": false
+        },
+        "container": {
+          "type": "string",
+          "description": "Name of the Docker container where Mago is installed",
+          "minLength": 1,
+          "examples": ["my-php-container", "php-dev", "app-container"]
+        },
+        "path": {
+          "type": "string",
+          "description": "Full path to the mago executable inside the container",
+          "minLength": 1,
+          "pattern": "^/.*",
+          "default": "/usr/local/bin/mago",
+          "examples": ["/usr/local/bin/mago", "/app/vendor/bin/mago"]
+        },
+        "configFile": {
+          "type": "string",
+          "description": "Path to the Mago configuration file (relative to project root). When omitted, Mago looks for mago.toml in the project root.",
+          "examples": ["mago.toml", "tools/mago.toml"]
+        },
+        "commands": {
+          "type": "array",
+          "description": "Mago commands to run for diagnostics (default: both). Note: analyze only resolves classes/functions from other files when mago.toml lists them under [source] paths.",
+          "items": {
+            "type": "string",
+            "enum": ["lint", "analyze"]
+          },
+          "minItems": 1,
+          "uniqueItems": true,
+          "default": ["lint", "analyze"],
+          "examples": [["lint"], ["lint", "analyze"]]
+        },
+        "format": {
+          "$ref": "#/$defs/formatConfig",
+          "description": "Document formatting configuration for Mago (mago format)"
+        },
+        "excludePaths": {
+          "type": "array",
+          "description": "Paths (relative to project root) to exclude from Mago diagnostics/formatting. Supports directory names, exact relative paths, and glob patterns.",
+          "items": {
+            "type": "string"
+          },
+          "examples": [["tests"], ["var", "public"], ["src/Legacy/*"]]
+        }
+      },
+      "required": ["enabled", "container", "path"],
+      "additionalProperties": false
     }
   },
   "examples": [
@@ -254,6 +313,13 @@
           "container": "my-php-container",
           "path": "/usr/local/bin/phpstan",
           "configFile": "phpstan.neon"
+        },
+        "mago": {
+          "enabled": false,
+          "container": "my-php-container",
+          "path": "/usr/local/bin/mago",
+          "configFile": "mago.toml",
+          "commands": ["lint", "analyze"]
         }
       }
     },

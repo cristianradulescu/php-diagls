@@ -23,6 +23,8 @@ func NewFormattingProvider(providerId string, providerConfig config.DiagnosticsP
 			return formatter, nil
 		}
 		return nil, fmt.Errorf("provider %s does not implement FormattingProvider interface", providerId)
+	case diagnostics.MagoProviderId:
+		return diagnostics.NewMago(providerConfig), nil
 	default:
 		return nil, fmt.Errorf("formatting not supported for provider: %s", providerId)
 	}

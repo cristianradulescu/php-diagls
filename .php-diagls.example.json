@@ -22,6 +22,16 @@
       "enabled": true,
       "container": "my-php-container",
       "path": "/usr/local/bin/php"
+    },
+    "mago": {
+      "enabled": false,
+      "container": "my-php-container",
+      "path": "/usr/local/bin/mago",
+      "configFile": "mago.toml",
+      "commands": ["lint", "analyze"],
+      "format": {
+        "enabled": false
+      }
     }
   }
 }

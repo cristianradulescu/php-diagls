@@ -33,6 +33,9 @@ type DiagnosticsProvider struct {
 	ConfigFile   string       `json:"configFile"`
 	Format       FormatConfig `json:"format"`
 	ExcludePaths []string     `json:"excludePaths,omitempty"`
+	// Commands lists the subcommands a multi-command tool runs for
+	// diagnostics (currently only mago: "lint", "analyze").
+	Commands []string `json:"commands,omitempty"`
 }
 
 func (config *Config) IsInitialized() bool {
